@@ -67,5 +67,3 @@ ros2 run octo_planner3d octo_planner_rviz_node
 
 **机器人规划与控制研究所**
 
-````
-
