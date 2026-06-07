@@ -16,6 +16,14 @@ OctoPlanner3D-ROS2 是基于纯 C++ 版本 [OctoPlanner3D](https://github.com/Ja
 
 ---
 
+## 运行效果
+
+RViz2 可视化运行效果如下：
+
+![OctoPlanner3D-ROS2 运行效果](./pic.png)
+
+---
+
 ## 依赖环境
 
 - ROS2
