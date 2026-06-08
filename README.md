@@ -28,7 +28,6 @@ RViz2 可视化运行效果如下：
 
 - ROS2
 - PCL
-- OctoMap
 - Eigen
 - CMake / colcon
 
