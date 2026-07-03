@@ -64,5 +64,11 @@ if(ament_cmake_FOUND)
     DESTINATION lib/${PROJECT_NAME}
   )
 
+  install(DIRECTORY
+    launch
+    config
+    DESTINATION share/${PROJECT_NAME}
+  )
+
   ament_package()
 endif()

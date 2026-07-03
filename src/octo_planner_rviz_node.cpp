@@ -27,11 +27,7 @@ constexpr double kZeroZThreshold = 1.0e-6;
 
 std::string defaultInputPcd()
 {
-#ifdef OCTO_PLANNER3D_SOURCE_DIR
-  return std::string(OCTO_PLANNER3D_SOURCE_DIR) + "/octomap/pcd_files/building2_9.pcd";
-#else
-  return "../octomap/pcd_files/building2_9.pcd";
-#endif
+  return "/home/ztl/slam_data/3d_map/3dmap.pcd";
 }
 
 geometry_msgs::msg::Point makePoint(double x, double y, double z)

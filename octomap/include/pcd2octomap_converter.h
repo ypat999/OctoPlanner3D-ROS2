@@ -74,7 +74,7 @@ private:
 
 private:
   // ================= 配置区域：保持写死，不改成参数 =================
-  std::string input_pcd_ = "../octomap/pcd_files/building2_9.pcd";
+  std::string input_pcd_ = "/home/ztl/slam_data/3d_map/3dmap.pcd";
   std::string output_bt_ = "result_cleaned.bt";
 
   double resolution_ = 0.2;          // Octomap 分辨率，单位：米

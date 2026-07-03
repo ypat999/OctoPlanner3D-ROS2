@@ -1,0 +1,22 @@
+/**:
+  ros__parameters:
+    # 输入 PCD 点云文件路径
+    input_pcd: "/home/ztl/slam_data/3d_map/3dmap.pcd"
+
+    # 输出 .bt 八叉树文件
+    output_bt: "result_cleaned.bt"
+
+    # RViz2 中使用的坐标框架
+    frame_id: "map"
+
+    # 体素地图可视化参数
+    map_alpha: 0.82           # 体素透明度 (0.05 ~ 1.0)
+    map_color_mode: "height"  # 颜色模式: "height" 按高度着色
+    map_publish_period: 2.0   # 地图发布周期 (秒)
+
+    # 规划起点 / 终点默认 Z 值（当用户未指定 z 时回退）
+    start_z: 0.3
+    goal_z: 0.3
+
+    # RViz2 Publish Point 工具的话题名
+    clicked_point_topic: "clicked_point"
