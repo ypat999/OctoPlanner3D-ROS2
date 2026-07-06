@@ -35,6 +35,7 @@ namespace global_planner
 
         octree_ = map;
         map_ready_ = true;
+        buildOccupancyCache();
         rebuildPreblockedCells();
         rebuildDerivedLayers();
         rebuildPreblockedCostmap();
@@ -711,9 +712,33 @@ namespace global_planner
         if (!isInsideMetricBounds(idx)) {
         return false;
         }
+        // 若已有占用缓存，使用 O(1) 哈希查询
+        if (!occupancy_cache_.empty()) {
+            return occupancy_cache_.count(idx) > 0;
+        }
+        // 退化到 octree 树搜索
         const auto p = gridToWorld(idx);
         const octomap::OcTreeNode * node = octree_->search(p);
         return node && octree_->isNodeOccupied(node);
+    }
+
+    void GlobalPlanner::buildOccupancyCache()
+    {
+        occupancy_cache_.clear();
+        if (!octree_) {
+            return;
+        }
+        const clock_t build_start = clock();
+        occupancy_cache_.reserve(octree_->getNumLeafNodes());
+        for (auto it = octree_->begin_leafs(); it != octree_->end_leafs(); ++it) {
+            if (octree_->isNodeOccupied(*it)) {
+                occupancy_cache_.insert(worldToGrid(it.getX(), it.getY(), it.getZ()));
+            }
+        }
+        std::cout << "  Occupancy cache: built " << occupancy_cache_.size()
+                  << " cells from " << octree_->getNumLeafNodes() << " leaf nodes in "
+                  << ((clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC))
+                  << " s" << std::endl;
     }
 
     GridIndex GlobalPlanner::worldToGrid(double x, double y, double z) const

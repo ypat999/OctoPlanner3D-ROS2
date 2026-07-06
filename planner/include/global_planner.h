@@ -77,6 +77,9 @@ public:
 
   void setOctomap(std::shared_ptr<octomap::OcTree> map);
 
+  /** 建立占用缓存：一次遍历八叉树叶节点，后续 isOccupiedCell 变为 O(1) 哈希查询 */
+  void buildOccupancyCache();
+
   /** 设置 OctoMap 并尝试从缓存加载规划层；若缓存不存在则重建并保存 */
   void setOctomapWithCache(
     std::shared_ptr<octomap::OcTree> map,
@@ -219,6 +222,9 @@ private:
   std::vector<PointPose> planner_results_;
 
   std::shared_ptr<octomap::OcTree> octree_;
+
+  /** 占用缓存：一次构建后 isOccupiedCell 变为 O(1) 哈希查询 */
+  std::unordered_set<GridIndex, GridIndexHash> occupancy_cache_;
 
   std::unordered_set<GridIndex, GridIndexHash> traversable_cells_;
   std::unordered_set<GridIndex, GridIndexHash> preblocked_cells_;
