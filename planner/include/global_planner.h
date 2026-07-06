@@ -16,6 +16,7 @@
 #include <unordered_set>
 #include <vector>
 #include <queue>
+#include <fstream>
 
 #include "octomap/OcTree.h"
 
@@ -76,6 +77,11 @@ public:
 
   void setOctomap(std::shared_ptr<octomap::OcTree> map);
 
+  /** 设置 OctoMap 并尝试从缓存加载规划层；若缓存不存在则重建并保存 */
+  void setOctomapWithCache(
+    std::shared_ptr<octomap::OcTree> map,
+    const std::string & cache_path);
+
   void makePlan(const PointPose start,const PointPose goal);
 
   void getPlannerResults(std::vector<PointPose>& plannerResults);
@@ -130,6 +136,11 @@ private:
   void publishRiskCostCloud() const;
 
   void rebuildDerivedLayers();
+
+  /** 将 traversable_cells_ / preblocked_cells_ / preblocked_costmap_ 保存到二进制文件 */
+  bool savePlanningCache(const std::string & cache_path) const;
+  /** 从二进制文件加载规划层缓存，成功返回 true */
+  bool loadPlanningCache(const std::string & cache_path);
 
   bool isCellTraversable(
     const GridIndex & idx,

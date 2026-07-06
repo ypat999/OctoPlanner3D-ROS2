@@ -562,6 +562,139 @@ namespace global_planner
         static_cast<float>((static_cast<double>(idx.z) + 0.5) * r));
     }
 
+    bool GlobalPlanner::savePlanningCache(const std::string & cache_path) const
+    {
+        // 格式: [4B version][8B count_traversable][count_traversable × GridIndex]
+        //       [8B count_preblocked][count_preblocked × GridIndex]
+        //       [8B count_costmap][count_costmap × (GridIndex + double)]
+        std::ofstream f(cache_path, std::ios::binary);
+        if (!f.is_open()) {
+            printf("GlobalPlanner: cannot write planning cache %s\n", cache_path.c_str());
+            return false;
+        }
+
+        const uint32_t version = 1;
+        f.write(reinterpret_cast<const char *>(&version), sizeof(version));
+
+        uint64_t count;
+
+        count = static_cast<uint64_t>(traversable_cells_.size());
+        f.write(reinterpret_cast<const char *>(&count), sizeof(count));
+        for (const auto & c : traversable_cells_) {
+            f.write(reinterpret_cast<const char *>(&c), sizeof(c));
+        }
+
+        count = static_cast<uint64_t>(preblocked_cells_.size());
+        f.write(reinterpret_cast<const char *>(&count), sizeof(count));
+        for (const auto & c : preblocked_cells_) {
+            f.write(reinterpret_cast<const char *>(&c), sizeof(c));
+        }
+
+        count = static_cast<uint64_t>(preblocked_costmap_.size());
+        f.write(reinterpret_cast<const char *>(&count), sizeof(count));
+        for (const auto & entry : preblocked_costmap_) {
+            f.write(reinterpret_cast<const char *>(&entry.first), sizeof(entry.first));
+            f.write(reinterpret_cast<const char *>(&entry.second), sizeof(entry.second));
+        }
+
+        printf("GlobalPlanner: saved planning cache (%zu traversable, %zu preblocked, %zu costmap) to %s\n",
+               traversable_cells_.size(), preblocked_cells_.size(), preblocked_costmap_.size(),
+               cache_path.c_str());
+        return true;
+    }
+
+    bool GlobalPlanner::loadPlanningCache(const std::string & cache_path)
+    {
+        std::ifstream f(cache_path, std::ios::binary);
+        if (!f.is_open()) {
+            return false;
+        }
+
+        uint32_t version = 0;
+        f.read(reinterpret_cast<char *>(&version), sizeof(version));
+        if (!f || version != 1) {
+            printf("GlobalPlanner: planning cache version mismatch (%u), rebuilding.\n", version);
+            return false;
+        }
+
+        uint64_t count;
+        traversable_cells_.clear();
+        preblocked_cells_.clear();
+        preblocked_costmap_.clear();
+
+        // traversable_cells_
+        f.read(reinterpret_cast<char *>(&count), sizeof(count));
+        if (!f) return false;
+        traversable_cells_.reserve(static_cast<size_t>(count));
+        for (uint64_t i = 0; i < count; ++i) {
+            GridIndex idx;
+            f.read(reinterpret_cast<char *>(&idx), sizeof(idx));
+            if (!f) return false;
+            traversable_cells_.insert(idx);
+        }
+
+        // preblocked_cells_
+        f.read(reinterpret_cast<char *>(&count), sizeof(count));
+        if (!f) return false;
+        preblocked_cells_.reserve(static_cast<size_t>(count));
+        for (uint64_t i = 0; i < count; ++i) {
+            GridIndex idx;
+            f.read(reinterpret_cast<char *>(&idx), sizeof(idx));
+            if (!f) return false;
+            preblocked_cells_.insert(idx);
+        }
+
+        // preblocked_costmap_
+        f.read(reinterpret_cast<char *>(&count), sizeof(count));
+        if (!f) return false;
+        preblocked_costmap_.reserve(static_cast<size_t>(count));
+        for (uint64_t i = 0; i < count; ++i) {
+            GridIndex idx;
+            double val;
+            f.read(reinterpret_cast<char *>(&idx), sizeof(idx));
+            if (!f) return false;
+            f.read(reinterpret_cast<char *>(&val), sizeof(val));
+            if (!f) return false;
+            preblocked_costmap_[idx] = val;
+        }
+
+        printf("GlobalPlanner: loaded planning cache (%zu traversable, %zu preblocked, %zu costmap) from %s\n",
+               traversable_cells_.size(), preblocked_cells_.size(), preblocked_costmap_.size(),
+               cache_path.c_str());
+        return true;
+    }
+
+    void GlobalPlanner::setOctomapWithCache(
+        std::shared_ptr<octomap::OcTree> map,
+        const std::string & cache_path)
+    {
+        if (!map)
+        {
+            printf("Octomap is Null!!! return.\n");
+            return;
+        }
+
+        if (octree_ == map)
+        {
+            printf("Octomap is No Update!!! return.\n");
+            return;
+        }
+
+        octree_ = map;
+        map_ready_ = true;
+
+        if (loadPlanningCache(cache_path)) {
+            printf("GlobalPlanner: using cached planning layers.\n");
+            return;
+        }
+
+        printf("GlobalPlanner: planning cache not found, rebuilding...\n");
+        rebuildPreblockedCells();
+        rebuildDerivedLayers();
+        rebuildPreblockedCostmap();
+        savePlanningCache(cache_path);
+    }
+
     void GlobalPlanner::rebuildPreblockedCostmap()
     {
         preblocked_costmap_.clear();

@@ -120,7 +120,7 @@ public:
     }
 
     octree_ = converter_->getOctomap();
-    planner_->setOctomap(octree_);
+    planner_->setOctomapWithCache(octree_, converter_->getOutputBtFile() + "_planning_cache");
 
     // 预计算地图可视化缓存（遍历八叉树最耗时，只做一次）
     {
