@@ -1,5 +1,6 @@
 #include "global_planner.h"
 
+#include <iostream>
 #include <atomic>
 #include <omp.h>
 
@@ -8,27 +9,29 @@ namespace global_planner
 
     GlobalPlanner::GlobalPlanner():map_ready_(false),has_start_(false),has_goal_(false),planning_in_progress_(false),plan_seq_(0),last_success_seq_(0)
     {
-        printf("GlobalPlanner Constructure!!! \n");
+        std::cout << "GlobalPlanner Constructure!!! " << std::endl;
     }
 
     GlobalPlanner::~GlobalPlanner()
     {
-        printf("GlobalPlanner Destructure!!! \n");
+        std::cout << "GlobalPlanner Destructure!!! " << std::endl;
     }
 
     void GlobalPlanner::setOctomap(std::shared_ptr<octomap::OcTree> map)
     {
         if (!map)
         {
-            printf("Octomap is Null!!! return.\n");
+            std::cout << "Octomap is Null!!! return." << std::endl;
             return;
         }
 
         if (octree_ == map)
         {
-            printf("Octomap is No Update!!! return.\n");
+            std::cout << "Octomap is No Update!!! return." << std::endl;
             return;
         }
+
+        std::cout << "GlobalPlanner::setOctomap setting Octomap... " << std::endl;
 
         octree_ = map;
         map_ready_ = true;
@@ -45,7 +48,7 @@ namespace global_planner
         goal_point_ = goal;
         has_goal_ = true;
 
-        printf("start = (%f,%f,%f),goal = (%f,%f,%f) \n",start_point_.x,start_point_.y,start_point_.z,goal_point_.x,goal_point_.y,goal_point_.z);
+        std::cout << "start = (" << start_point_.x << "," << start_point_.y << "," << start_point_.z << "),goal = (" << goal_point_.x << "," << goal_point_.y << "," << goal_point_.z << ") " << std::endl;
          
         tryPlan();
 
@@ -53,10 +56,10 @@ namespace global_planner
 
     void GlobalPlanner::tryPlan()
     {
-        printf("GlobalPlanner::tryPlan planning...\n");
+        std::cout << "GlobalPlanner::tryPlan planning..." << std::endl;
         if (!map_ready_ || !has_start_ || !has_goal_ || planning_in_progress_) 
         {
-            printf("GlobalPlanner::tryPlan 异常退出规划器\n");
+            std::cout << "GlobalPlanner::tryPlan 异常退出规划器" << std::endl;
             return;
         }
         planning_in_progress_ = true;
@@ -65,7 +68,7 @@ namespace global_planner
         planning_in_progress_ = false;
         if (!ok) 
         {
-            printf("GlobalPlanner::tryPlan() A* planning failed. \n");
+            std::cout << "GlobalPlanner::tryPlan() A* planning failed. " << std::endl;
         } 
         else 
         {
@@ -106,26 +109,26 @@ namespace global_planner
 
         if (!start_ok) 
         {
-            printf("GlobalPlanner::startPlan() Start is occupied/out of map and no nearby free cell.\n");
+            std::cout << "GlobalPlanner::startPlan() Start is occupied/out of map and no nearby free cell." << std::endl;
             return false;
         }
 
         if (!goal_ok) 
         {
-            printf("GlobalPlanner::startPlan() Goal is occupied/out of map and no nearby free cell.\n");
+            std::cout << "GlobalPlanner::startPlan() Goal is occupied/out of map and no nearby free cell." << std::endl;
             return false;
         }
 
         if (!(start == start_raw)) 
         {
             const auto p = gridToWorld(start);
-            printf("GlobalPlanner::startPlan() Start snapped to free cell: [%.2f, %.2f, %.2f] \n",p.x(), p.y(), p.z());
+            std::cout << "GlobalPlanner::startPlan() Start snapped to free cell: [" << p.x() << ", " << p.y() << ", " << p.z() << "] " << std::endl;
         }
 
         if (!(goal == goal_raw))
         {
             const auto p = gridToWorld(goal);
-            printf("GlobalPlanner::startPlan() Goal snapped to free cell: [%.2f, %.2f, %.2f] \n",p.x(), p.y(), p.z());
+            std::cout << "GlobalPlanner::startPlan() Goal snapped to free cell: [" << p.x() << ", " << p.y() << ", " << p.z() << "] " << std::endl;
         }
 
         std::priority_queue<QueueNode, std::vector<QueueNode>, QueueNodeCompare> open_set;
@@ -143,9 +146,7 @@ namespace global_planner
         const int log_interval = std::max(1, max_iterations / 20);  // 每 5% 输出一次
         int next_log_iter = log_interval;
 
-        printf("  A* planning: start=(%d,%d,%d) goal=(%d,%d,%d), max_iterations=%d, grid resolution=%.2f\n",
-               start.x, start.y, start.z, goal.x, goal.y, goal.z, max_iterations,
-               octree_->getResolution());
+        std::cout << "  A* planning: start=(" << start.x << "," << start.y << "," << start.z << ") goal=(" << goal.x << "," << goal.y << "," << goal.z << "), max_iterations=" << max_iterations << ", grid resolution=" << octree_->getResolution() << std::endl;
 
         while (!open_set.empty() && iters < max_iterations) 
         {
@@ -161,8 +162,7 @@ namespace global_planner
             if (current.idx == goal) {
                 const auto cells = reconstructPath(came_from, current.idx);
                 const double elapsed = (clock() - plan_start) / static_cast<double>(CLOCKS_PER_SEC);
-                printf("  A* planning: path found in %d iterations (%zu waypoints, %.1f s)\n",
-                       iters, cells.size(), elapsed);
+                std::cout << "  A* planning: path found in " << iters << " iterations (" << cells.size() << " waypoints, " << elapsed << " s)" << std::endl;
                 planner_results_.clear();
                 for (std::size_t i = 0; i < cells.size(); ++i) 
                 {
@@ -182,10 +182,7 @@ namespace global_planner
             if (iters >= next_log_iter) {
                 const double elapsed = (clock() - plan_start) / static_cast<double>(CLOCKS_PER_SEC);
                 const auto cur_world = gridToWorld(current.idx);
-                printf("  A* planning: %d / %d iterations (%.0f%%), open=%zu, closed=%zu, dist_to_goal=%.1f, %.1f s\n",
-                       iters, max_iterations, 100.0 * iters / max_iterations,
-                       open_set.size(), closed_set.size(),
-                       euclidean(current.idx, goal) * octree_->getResolution(), elapsed);
+                std::cout << "  A* planning: " << iters << " / " << max_iterations << " iterations (" << (100.0 * iters / max_iterations) << "%), open=" << open_set.size() << ", closed=" << closed_set.size() << ", dist_to_goal=" << (euclidean(current.idx, goal) * octree_->getResolution()) << ", " << elapsed << " s" << std::endl;
                 next_log_iter = iters + log_interval;
             }
 
@@ -218,8 +215,7 @@ namespace global_planner
         }
 
         const double elapsed = (clock() - plan_start) / static_cast<double>(CLOCKS_PER_SEC);
-        printf("  A* planning: FAILED after %d / %d iterations (%.1f s), open=%zu, closed=%zu\n",
-               iters, max_iterations, elapsed, open_set.size(), closed_set.size());
+        std::cout << "  A* planning: FAILED after " << iters << " / " << max_iterations << " iterations (" << elapsed << " s), open=" << open_set.size() << ", closed=" << closed_set.size() << std::endl;
         return false;
     }
 
@@ -402,6 +398,7 @@ namespace global_planner
 
     void GlobalPlanner::rebuildPreblockedCells()
     {
+        std::cout << "GlobalPlanner::rebuildPreblockedCells rebuilding preblocked cells... " << std::endl;
         preblocked_cells_.clear();
         if (!octree_) {
         return;
@@ -431,9 +428,7 @@ namespace global_planner
         ++processed_leafs;
         if (processed_leafs % report_interval == 0) {
             const int pct = static_cast<int>(processed_leafs * 100 / total_leafs);
-            printf("  Preblocked cells: scanning leafs %d%% (%zu / %zu, %zu candidates, %.1f s)\n",
-                   pct, processed_leafs, total_leafs, candidates.size(),
-                   (clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC));
+            std::cout << "  Preblocked cells: scanning leafs " << pct << "% (" << processed_leafs << " / " << total_leafs << ", " << candidates.size() << " candidates, " << ((clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC)) << " s)" << std::endl;
         }
         }
 
@@ -473,9 +468,7 @@ namespace global_planner
             preblocked_cells_.insert(c);
         }
         }
-        printf("  Preblocked cells: done (%zu candidate, %zu preblocked, %.1f s)\n",
-               preblocked_cells_.size(), external_preblocked_cells_.size(),
-               (clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC));
+        std::cout << "  Preblocked cells: done (" << preblocked_cells_.size() << " candidate, " << external_preblocked_cells_.size() << " preblocked, " << ((clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC)) << " s)" << std::endl;
         // publishPreblockedCellsMarker();
     }
 
@@ -523,6 +516,7 @@ namespace global_planner
 
     void GlobalPlanner::rebuildDerivedLayers()
     {
+        std::cout << "GlobalPlanner::rebuildDerivedLayers rebuilding derived layers... " << std::endl;
         traversable_cells_.clear();
         if (!octree_) {
         return;
@@ -562,9 +556,7 @@ namespace global_planner
 
         const int nt = (num_threads_ > 0) ? num_threads_ : 0;
 
-        printf("  Traversable layer: scanning %lld (x,y) columns (%lld voxels total), %d thread(s)...\n",
-               static_cast<long long>(total_xy), static_cast<long long>(total_voxels),
-               nt > 0 ? nt : omp_get_max_threads());
+        std::cout << "  Traversable layer: scanning " << static_cast<long long>(total_xy) << " (x,y) columns (" << static_cast<long long>(total_voxels) << " voxels total), " << (nt > 0 ? nt : omp_get_max_threads()) << " thread(s)..." << std::endl;
 
 #pragma omp parallel for num_threads(nt) schedule(dynamic, 64) if(nt != 1)
         for (int64_t i = 0; i < total_xy; ++i) {
@@ -602,20 +594,14 @@ namespace global_planner
             if (pct >= next_log_pct) {
 #pragma omp critical
                 if (pct >= next_log_pct) {
-                    printf("  Traversable layer: %d%% (%lld / %lld columns, %zu traversable, %.1f s)\n",
-                           pct, static_cast<long long>(done), static_cast<long long>(total_xy),
-                           traversable_cells_.size(),
-                           (clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC));
+                    std::cout << "  Traversable layer: " << pct << "% (" << static_cast<long long>(done) << " / " << static_cast<long long>(total_xy) << " columns, " << traversable_cells_.size() << " traversable, " << ((clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC)) << " s)" << std::endl;
                     next_log_pct = pct + 10;
                     if (next_log_pct > 100) next_log_pct = 100;
                 }
             }
         }
 
-        printf("  Traversable layer: 100%% (%lld / %lld columns, %zu traversable, %.1f s)\n",
-               static_cast<long long>(total_xy), static_cast<long long>(total_xy),
-               traversable_cells_.size(),
-               (clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC));
+        std::cout << "  Traversable layer: 100% (" << static_cast<long long>(total_xy) << " / " << static_cast<long long>(total_xy) << " columns, " << traversable_cells_.size() << " traversable, " << ((clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC)) << " s)" << std::endl;
 
         // publishCellSetMarker(
         // traversable_cells_, traversable_marker_pub_, "traversable_cells", 0.20F, 0.95F, 0.55F,
@@ -674,7 +660,7 @@ namespace global_planner
         //       [8B count_costmap][count_costmap × (GridIndex + double)]
         std::ofstream f(cache_path, std::ios::binary);
         if (!f.is_open()) {
-            printf("GlobalPlanner: cannot write planning cache %s\n", cache_path.c_str());
+            std::cout << "GlobalPlanner: cannot write planning cache " << cache_path << std::endl;
             return false;
         }
 
@@ -725,9 +711,7 @@ namespace global_planner
             f.write(reinterpret_cast<const char *>(&entry.second), sizeof(entry.second));
         }
 
-        printf("GlobalPlanner: saved planning cache (%zu traversable, %zu preblocked, %zu costmap) to %s\n",
-               traversable_cells_.size(), preblocked_cells_.size(), preblocked_costmap_.size(),
-               cache_path.c_str());
+        std::cout << "GlobalPlanner: saved planning cache (" << traversable_cells_.size() << " traversable, " << preblocked_cells_.size() << " preblocked, " << preblocked_costmap_.size() << " costmap) to " << cache_path << std::endl;
         return true;
     }
 
@@ -767,8 +751,7 @@ namespace global_planner
 
             const double cur_resolution = octree_ ? octree_->getResolution() : 0.0;
             const auto mismatch = [&](const char * name, auto stored, auto current) {
-                printf("GlobalPlanner: %s changed (%s vs %s), rebuilding planning cache.\n",
-                       name, std::to_string(stored).c_str(), std::to_string(current).c_str());
+                std::cout << "GlobalPlanner: " << name << " changed (" << std::to_string(stored) << " vs " << std::to_string(current) << "), rebuilding planning cache." << std::endl;
             };
 
             bool ok = true;
@@ -854,9 +837,7 @@ namespace global_planner
             preblocked_costmap_[idx] = val;
         }
 
-        printf("GlobalPlanner: loaded planning cache (%zu traversable, %zu preblocked, %zu costmap) from %s\n",
-               traversable_cells_.size(), preblocked_cells_.size(), preblocked_costmap_.size(),
-               cache_path.c_str());
+        std::cout << "GlobalPlanner: loaded planning cache (" << traversable_cells_.size() << " traversable, " << preblocked_cells_.size() << " preblocked, " << preblocked_costmap_.size() << " costmap) from " << cache_path << std::endl;
         return true;
     }
 
@@ -866,13 +847,13 @@ namespace global_planner
     {
         if (!map)
         {
-            printf("Octomap is Null!!! return.\n");
+            std::cout << "Octomap is Null!!! return." << std::endl;
             return;
         }
 
         if (octree_ == map)
         {
-            printf("Octomap is No Update!!! return.\n");
+            std::cout << "Octomap is No Update!!! return." << std::endl;
             return;
         }
 
@@ -880,11 +861,11 @@ namespace global_planner
         map_ready_ = true;
 
         if (loadPlanningCache(cache_path)) {
-            printf("GlobalPlanner: using cached planning layers.\n");
+            std::cout << "GlobalPlanner: using cached planning layers." << std::endl;
             return;
         }
 
-        printf("GlobalPlanner: planning cache not found, rebuilding...\n");
+        std::cout << "GlobalPlanner: planning cache not found, rebuilding..." << std::endl;
         rebuildPreblockedCells();
         rebuildDerivedLayers();
         rebuildPreblockedCostmap();
@@ -893,6 +874,7 @@ namespace global_planner
 
     void GlobalPlanner::rebuildPreblockedCostmap()
     {
+        std::cout << "GlobalPlanner::rebuildPreblockedCostmap rebuilding preblocked costmap... " << std::endl;
         preblocked_costmap_.clear();
         if (!octree_) {
         return;
@@ -908,9 +890,7 @@ namespace global_planner
 
         const clock_t build_start = clock();
         const size_t total_cells = preblocked_cells_.size();
-        printf("  Preblocked costmap: spreading %zu cells, radius %d, %d thread(s)...\n",
-               total_cells, radius_cells,
-               (num_threads_ > 0) ? num_threads_ : omp_get_max_threads());
+        std::cout << "  Preblocked costmap: spreading " << total_cells << " cells, radius " << radius_cells << ", " << (num_threads_ > 0 ? num_threads_ : omp_get_max_threads()) << " thread(s)..." << std::endl;
 
         std::atomic<size_t> processed{0};
         int next_log_pct = 10;
@@ -963,10 +943,7 @@ namespace global_planner
                 if (pct >= next_log_pct) {
 #pragma omp critical
                     if (pct >= next_log_pct) {
-                        printf("  Preblocked costmap: %d%% (%lld / %zu cells, %zu costmap, %.1f s)\n",
-                               pct, static_cast<long long>(done), total_cells,
-                               preblocked_costmap_.size(),
-                               (clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC));
+                        std::cout << "  Preblocked costmap: " << pct << "% (" << static_cast<long long>(done) << " / " << total_cells << " cells, " << preblocked_costmap_.size() << " costmap, " << ((clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC)) << " s)" << std::endl;
                         next_log_pct = pct + 10;
                         if (next_log_pct > 100) next_log_pct = 100;
                     }
@@ -983,15 +960,13 @@ namespace global_planner
             }
         }
 
-        printf("  Preblocked costmap: 100%% (%zu / %zu cells, %zu costmap, %.1f s)\n",
-               total_cells, total_cells, preblocked_costmap_.size(),
-               (clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC));
+        std::cout << "  Preblocked costmap: 100% (" << total_cells << " / " << total_cells << " cells, " << preblocked_costmap_.size() << " costmap, " << ((clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC)) << " s)" << std::endl;
 
         // RCLCPP_INFO(
         // get_logger(),
         // "Preblocked costmap rebuilt. cells=%zu radius=%d",
         // preblocked_costmap_.size(), radius_cells);
-        // printf("Preblocked costmap rebuilt. cells=%zu radius=%d \n",preblocked_costmap_.size(),radius_cells);
+        // std::cout << "Preblocked costmap rebuilt. cells=" << preblocked_costmap_.size() << " radius=" << radius_cells << " " << std::endl;
         // publishRiskCostCloud();
     }
 
