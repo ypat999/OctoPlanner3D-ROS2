@@ -236,6 +236,8 @@ private:
       return;
     }
 
+    const auto t_start = std::chrono::steady_clock::now();
+
     double min_x = 0.0;
     double min_y = 0.0;
     double min_z = 0.0;
@@ -247,18 +249,25 @@ private:
     const double z_range = std::max(1.0e-6, max_z - min_z);
     const float alpha = static_cast<float>(std::clamp(map_alpha_, 0.05, 1.0));
 
-    // --- MarkerArray（按大小分组，按高度着色） ---
+    RCLCPP_INFO(get_logger(), "Publishing map...");
+
     std::unordered_map<double, visualization_msgs::msg::Marker> markers_by_size;
-    // --- PointCloud2 计数 ---
-    size_t point_count = 0;
+    std::vector<geometry_msgs::msg::Point> cloud_points;
+
+    size_t total_processed = 0;
+    const size_t total_leafs = octree_->getNumLeafNodes();
+    const size_t report_interval = std::max(size_t(1), total_leafs / 10);
 
     for (auto it = octree_->begin_leafs(); it != octree_->end_leafs(); ++it) {
       if (!octree_->isNodeOccupied(*it)) {
         continue;
       }
-      ++point_count;
 
+      const double x = it.getX();
+      const double y = it.getY();
+      const double z = it.getZ();
       const double size = it.getSize();
+
       auto marker_it = markers_by_size.find(size);
       if (marker_it == markers_by_size.end()) {
         visualization_msgs::msg::Marker marker;
@@ -274,10 +283,23 @@ private:
         marker_it = markers_by_size.emplace(size, std::move(marker)).first;
       }
 
-      marker_it->second.points.push_back(makePoint(it.getX(), it.getY(), it.getZ()));
+      auto pt = makePoint(x, y, z);
+      marker_it->second.points.push_back(pt);
+      cloud_points.push_back(pt);
+
+      ++total_processed;
+      if (total_processed % report_interval == 0) {
+        const int pct = static_cast<int>(total_processed * 100 / total_leafs);
+        const double elapsed =
+          std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - t_start).count();
+        RCLCPP_INFO(get_logger(), "Publishing map: %d%% (%zu / %zu nodes, %zu occupied)",
+                    pct, total_processed, total_leafs, cloud_points.size());
+      }
     }
 
-    // MarkerArray publish
+    RCLCPP_INFO(get_logger(), "Map traversal done: %zu occupied voxels", cloud_points.size());
+
     {
       visualization_msgs::msg::MarkerArray array;
       int id = 0;
@@ -304,17 +326,15 @@ private:
       map_pub_->publish(array);
     }
 
-    // --- PointCloud2 publish ---
-    if (map_cloud_pub_ && point_count > 0) {
+    if (map_cloud_pub_ && !cloud_points.empty()) {
       sensor_msgs::msg::PointCloud2 cloud_msg;
       cloud_msg.header.frame_id = frame_id_;
       cloud_msg.header.stamp = now();
       cloud_msg.height = 1;
-      cloud_msg.width = static_cast<uint32_t>(point_count);
+      cloud_msg.width = static_cast<uint32_t>(cloud_points.size());
       cloud_msg.is_bigendian = false;
       cloud_msg.is_dense = true;
 
-      // fields: x, y, z (FLOAT32 each)
       cloud_msg.fields.resize(3);
       cloud_msg.fields[0].name = "x";
       cloud_msg.fields[0].offset = 0;
@@ -333,24 +353,25 @@ private:
       cloud_msg.row_step = cloud_msg.point_step * cloud_msg.width;
       cloud_msg.data.resize(cloud_msg.row_step);
 
-      // fill data
       {
         sensor_msgs::PointCloud2Iterator<float> iter_x(cloud_msg, "x");
         sensor_msgs::PointCloud2Iterator<float> iter_y(cloud_msg, "y");
         sensor_msgs::PointCloud2Iterator<float> iter_z(cloud_msg, "z");
-        for (auto it = octree_->begin_leafs(); it != octree_->end_leafs(); ++it) {
-          if (!octree_->isNodeOccupied(*it)) {
-            continue;
-          }
-          *iter_x = static_cast<float>(it.getX());
-          *iter_y = static_cast<float>(it.getY());
-          *iter_z = static_cast<float>(it.getZ());
+        for (const auto & pt : cloud_points) {
+          *iter_x = static_cast<float>(pt.x);
+          *iter_y = static_cast<float>(pt.y);
+          *iter_z = static_cast<float>(pt.z);
           ++iter_x; ++iter_y; ++iter_z;
         }
       }
 
       map_cloud_pub_->publish(cloud_msg);
     }
+
+    const double total_s =
+      std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - t_start).count();
+    RCLCPP_INFO(get_logger(), "Map published in %.2f s", total_s);
   }
 
   std_msgs::msg::ColorRGBA heightColor(double t, float alpha) const
