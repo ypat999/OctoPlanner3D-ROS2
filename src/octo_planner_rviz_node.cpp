@@ -100,8 +100,6 @@ public:
     const double resolution = declare_parameter<double>("resolution", 0.2);
     const int min_points_per_voxel = declare_parameter<int>("min_points_per_voxel", 2);
     const int min_cluster_voxels = declare_parameter<int>("min_cluster_voxels", 2);
-    const double map_publish_period =
-      declare_parameter<double>("map_publish_period", 2.0);
 
     converter_ = std::make_shared<pcd2octomap::Pcd2OctomapConverter>();
     converter_->setInputPcdFile(input_pcd);
@@ -173,11 +171,7 @@ public:
       rclcpp::QoS(10),
       std::bind(&OctoPlannerRvizNode::onClickedPoint, this, std::placeholders::_1));
 
-    publishMap();
-    map_timer_ = create_wall_timer(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::duration<double>(std::max(0.1, map_publish_period))),
-      std::bind(&OctoPlannerRvizNode::publishMap, this));
+    publishMap();  // 地图不变，发布一次即可（transient_local 保证晚订阅者也能收到）
 
     RCLCPP_INFO(
       get_logger(),
@@ -589,7 +583,6 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr start_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr clicked_point_sub_;
-  rclcpp::TimerBase::SharedPtr map_timer_;
 };
 
 int main(int argc, char ** argv)
