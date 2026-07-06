@@ -398,77 +398,164 @@ namespace global_planner
 
     void GlobalPlanner::rebuildPreblockedCells()
     {
-        std::cout << "GlobalPlanner::rebuildPreblockedCells rebuilding preblocked cells... " << std::endl;
         preblocked_cells_.clear();
         if (!octree_) {
         return;
         }
 
         const clock_t build_start = clock();
+        const int nt = (num_threads_ > 0) ? num_threads_ : 0;
 
-        std::unordered_set<GridIndex, GridIndexHash> candidates;
+        // === Phase 1: 收集所有被占用的叶子节点位置（串行，快） ===
+        std::vector<GridIndex> occupied;
         const size_t total_leafs = octree_->getNumLeafNodes();
-        const size_t report_interval = std::max(size_t(1), total_leafs / 10);
-        size_t processed_leafs = 0;
+        occupied.reserve(total_leafs);
+        size_t skipped = 0;
 
         for (auto it = octree_->begin_leafs(); it != octree_->end_leafs(); ++it) {
-        if (!octree_->isNodeOccupied(*it)) {
-            ++processed_leafs;
-            continue;
-        }
-        const GridIndex occ = worldToGrid(it.getX(), it.getY(), it.getZ());
-        for (int dx = -1; dx <= 1; ++dx) {
-            for (int dy = -1; dy <= 1; ++dy) {
-            if (dx == 0 && dy == 0) {
-                continue;
-            }
-            candidates.insert(GridIndex{occ.x + dx, occ.y + dy, occ.z});
+            if (octree_->isNodeOccupied(*it)) {
+                occupied.push_back(worldToGrid(it.getX(), it.getY(), it.getZ()));
+            } else {
+                ++skipped;
             }
         }
-        ++processed_leafs;
-        if (processed_leafs % report_interval == 0) {
-            const int pct = static_cast<int>(processed_leafs * 100 / total_leafs);
-            std::cout << "  Preblocked cells: scanning leafs " << pct << "% (" << processed_leafs << " / " << total_leafs << ", " << candidates.size() << " candidates, " << ((clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC)) << " s)" << std::endl;
-        }
+        std::cout << "  Preblocked cells: collected " << occupied.size()
+                  << " occupied leaf nodes (" << skipped << " free, "
+                  << ((clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC)) << " s)" << std::endl;
+
+        // === Phase 2: 并行生成候选体素 ===
+        const size_t occ_size = occupied.size();
+        std::atomic<int> processed{0};
+        int next_log_pct = 10;
+
+        const int num_threads = nt > 0 ? nt : omp_get_max_threads();
+        std::vector<std::unordered_set<GridIndex, GridIndexHash>> local_candidates(num_threads);
+
+#pragma omp parallel num_threads(nt) if(nt != 1)
+        {
+            const int tid = omp_get_thread_num();
+            auto & my_candidates = local_candidates[tid];
+            my_candidates.reserve(occ_size * 8 / num_threads);
+
+#pragma omp for schedule(dynamic, 1024)
+            for (int64_t i = 0; i < static_cast<int64_t>(occ_size); ++i) {
+                const auto & occ = occupied[static_cast<size_t>(i)];
+                for (int dx = -1; dx <= 1; ++dx) {
+                    for (int dy = -1; dy <= 1; ++dy) {
+                        if (dx == 0 && dy == 0) continue;
+                        my_candidates.insert(GridIndex{occ.x + dx, occ.y + dy, occ.z});
+                    }
+                }
+
+                const int done = processed.fetch_add(1) + 1;
+                const int pct = done * 100 / static_cast<int>(occ_size);
+                if (pct >= next_log_pct) {
+#pragma omp critical
+                    if (pct >= next_log_pct) {
+                        size_t total_cand = 0;
+                        for (const auto & lc : local_candidates) total_cand += lc.size();
+                        std::cout << "  Preblocked cells: generating " << pct << "% ("
+                                  << done << " / " << occ_size << " occ, "
+                                  << total_cand << " candidates, "
+                                  << ((clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC))
+                                  << " s)" << std::endl;
+                        next_log_pct = pct + 10;
+                        if (next_log_pct > 100) next_log_pct = 100;
+                    }
+                }
+            }
         }
 
-        for (const auto & c : candidates) {
-        if (!isInsideMetricBounds(c)) {
-            continue;
+        // 合并线程局部候选集
+        std::unordered_set<GridIndex, GridIndexHash> candidates;
+        size_t total_cand = 0;
+        for (const auto & lc : local_candidates) total_cand += lc.size();
+        candidates.reserve(total_cand);
+        for (auto & lc : local_candidates) {
+            for (const auto & c : lc) candidates.insert(c);
         }
-        if (isOccupiedCell(c)) {
-            continue;
-        }
-        const GridIndex below0{c.x, c.y, c.z - 1};
-        const bool below0_occ = isInsideMetricBounds(below0) && isOccupiedCell(below0);
-        if (below0_occ && hasSameLevelNeighborWithOccupiedAbove(c)) {
-            preblocked_cells_.insert(c);
-            continue;
-        }
-        const GridIndex above1{c.x, c.y, c.z + 1};
-        const bool above1_occ = isInsideMetricBounds(above1) && isOccupiedCell(above1);
-        if (!hasNonOccupiedNeighborSameLevel(c)) {
-            continue;
-        }
-        if (above1_occ) {
-            continue;
-        }
-        const GridIndex below1{c.x, c.y, c.z - 1};
-        if (!isInsideMetricBounds(below1)) {
-            continue;
-        }
-        const bool below1_non_occupied = !isOccupiedCell(below1);
-        if (below1_non_occupied) {
-            preblocked_cells_.insert(c);
-        }
+        std::cout << "  Preblocked cells: merged " << candidates.size()
+                  << " unique candidates from " << occ_size << " occupied ("
+                  << ((clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC)) << " s)" << std::endl;
+
+        // === Phase 3: 并行过滤候选体素 ===
+        const int64_t cand_total = static_cast<int64_t>(candidates.size());
+        if (cand_total == 0) {
+            std::cout << "  Preblocked cells: done (0 candidates, "
+                      << ((clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC)) << " s)" << std::endl;
+            return;
         }
 
+        std::vector<GridIndex> cand_vec(candidates.begin(), candidates.end());
+        candidates.clear();
+
+        processed = 0;
+        next_log_pct = 10;
+
+        std::vector<std::unordered_set<GridIndex, GridIndexHash>> local_preblocked(num_threads);
+
+#pragma omp parallel num_threads(nt) if(nt != 1)
+        {
+            const int tid = omp_get_thread_num();
+            auto & my_pb = local_preblocked[tid];
+            my_pb.reserve(cand_total / num_threads);
+
+#pragma omp for schedule(dynamic, 256)
+            for (int64_t i = 0; i < cand_total; ++i) {
+                const auto & c = cand_vec[static_cast<size_t>(i)];
+                if (!isInsideMetricBounds(c)) continue;
+                if (isOccupiedCell(c)) continue;
+
+                const GridIndex below0{c.x, c.y, c.z - 1};
+                const bool below0_occ = isInsideMetricBounds(below0) && isOccupiedCell(below0);
+                if (below0_occ && hasSameLevelNeighborWithOccupiedAbove(c)) {
+                    my_pb.insert(c);
+                    continue;
+                }
+                const GridIndex above1{c.x, c.y, c.z + 1};
+                const bool above1_occ = isInsideMetricBounds(above1) && isOccupiedCell(above1);
+                if (!hasNonOccupiedNeighborSameLevel(c)) continue;
+                if (above1_occ) continue;
+                const GridIndex below1{c.x, c.y, c.z - 1};
+                if (!isInsideMetricBounds(below1)) continue;
+                if (!isOccupiedCell(below1)) {
+                    my_pb.insert(c);
+                }
+
+                const int done = processed.fetch_add(1) + 1;
+                const int pct = done * 100 / static_cast<int>(cand_total);
+                if (pct >= next_log_pct) {
+#pragma omp critical
+                    if (pct >= next_log_pct) {
+                        size_t total_pb = 0;
+                        for (const auto & lp : local_preblocked) total_pb += lp.size();
+                        std::cout << "  Preblocked cells: filtering " << pct << "% ("
+                                  << done << " / " << cand_total << " candidates, "
+                                  << total_pb << " preblocked, "
+                                  << ((clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC))
+                                  << " s)" << std::endl;
+                        next_log_pct = pct + 10;
+                        if (next_log_pct > 100) next_log_pct = 100;
+                    }
+                }
+            }
+        }
+
+        // 合并线程局部结果
+        for (auto & lp : local_preblocked) {
+            for (const auto & c : lp) preblocked_cells_.insert(c);
+        }
+
+        // === Phase 4: 合并外部预遮挡体素 ===
         for (const auto & c : external_preblocked_cells_) {
-        if (isInsideMetricBounds(c) && !isOccupiedCell(c)) {
-            preblocked_cells_.insert(c);
+            if (isInsideMetricBounds(c) && !isOccupiedCell(c)) {
+                preblocked_cells_.insert(c);
+            }
         }
-        }
-        std::cout << "  Preblocked cells: done (" << preblocked_cells_.size() << " candidate, " << external_preblocked_cells_.size() << " preblocked, " << ((clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC)) << " s)" << std::endl;
+
+        std::cout << "  Preblocked cells: done ("
+                  << preblocked_cells_.size() << " preblocked, "
+                  << ((clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC)) << " s)" << std::endl;
         // publishPreblockedCellsMarker();
     }
 
