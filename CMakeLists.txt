@@ -6,7 +6,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(PCL REQUIRED COMPONENTS io common)
+find_package(OpenMP REQUIRED)
 find_package(ament_cmake QUIET)
+
+# 全局启用 OpenMP
+if(OpenMP_CXX_FOUND)
+  add_compile_options(${OpenMP_CXX_FLAGS})
+  link_libraries(${OpenMP_CXX_LIBRARIES})
+endif()
 
 # OctoMap 库从源码编译 (third_party/octomap submodule)
 add_subdirectory(third_party)

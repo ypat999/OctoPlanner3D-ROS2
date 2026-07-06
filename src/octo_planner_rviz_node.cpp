@@ -102,6 +102,8 @@ public:
     const int min_cluster_voxels = declare_parameter<int>("min_cluster_voxels", 2);
     const double map_publish_period =
       declare_parameter<double>("map_publish_period", 2.0);
+    const int openmp_num_threads =
+      declare_parameter<int>("openmp_num_threads", 0);
 
     converter_ = std::make_shared<pcd2octomap::Pcd2OctomapConverter>();
     converter_->setInputPcdFile(input_pcd);
@@ -112,6 +114,7 @@ public:
     converter_->setMinPointsPerVoxel(min_points_per_voxel);
     converter_->setMinClusterVoxels(min_cluster_voxels);
     planner_ = std::make_shared<global_planner::GlobalPlanner>();
+    planner_->setNumThreads(openmp_num_threads);
 
     RCLCPP_INFO(get_logger(), "Building OctoMap from configured PCD file...");
     if (!converter_->convert()) {

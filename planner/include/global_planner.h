@@ -82,6 +82,9 @@ public:
     std::shared_ptr<octomap::OcTree> map,
     const std::string & cache_path);
 
+  /** 设置 OpenMP 并行线程数（0 = 使用默认线程数） */
+  void setNumThreads(int n) { num_threads_ = n; }
+
   void makePlan(const PointPose start,const PointPose goal);
 
   void getPlannerResults(std::vector<PointPose>& plannerResults);
@@ -202,6 +205,8 @@ private:
   bool has_goal_ = false;
   bool has_goal_pose_ = false;
   bool planning_in_progress_ = false;
+
+  int num_threads_ = 0;  // OpenMP 线程数，0 = 使用默认值
 
   std::uint64_t plan_seq_ = 0;
   std::uint64_t last_success_seq_ = 0;

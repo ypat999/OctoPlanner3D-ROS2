@@ -9,4 +9,7 @@ target_link_libraries(GlobalPlanner
   PUBLIC
     octomap
     octomath
+    OpenMP::OpenMP_CXX
 )
+
+target_compile_options(GlobalPlanner PRIVATE ${OpenMP_CXX_FLAGS})

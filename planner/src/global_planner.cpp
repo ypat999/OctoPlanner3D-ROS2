@@ -1,5 +1,8 @@
 #include "global_planner.h"
 
+#include <atomic>
+#include <omp.h>
+
 namespace global_planner
 {
 
@@ -500,45 +503,77 @@ namespace global_planner
         const GridIndex min_idx = worldToGrid(min_x, min_y, min_z);
         const GridIndex max_idx = worldToGrid(max_x, max_y, max_z);
 
-        const int64_t total_z = static_cast<int64_t>(max_idx.z) - min_idx.z + 1;
-        const int64_t total_per_z = (static_cast<int64_t>(max_idx.x) - min_idx.x + 1)
-                                  * (static_cast<int64_t>(max_idx.y) - min_idx.y + 1);
-        const int64_t total = total_z * total_per_z;
-        int64_t processed = 0;
-        int next_log_pct = 10;
-
-        for (int z = min_idx.z; z <= max_idx.z; ++z) {
+        // 预计算所有 (x,y) 列对
+        struct XY { int x, y; };
+        std::vector<XY> xy_pairs;
+        xy_pairs.reserve(static_cast<size_t>(max_idx.x - min_idx.x + 1)
+                       * static_cast<size_t>(max_idx.y - min_idx.y + 1));
         for (int x = min_idx.x; x <= max_idx.x; ++x) {
             for (int y = min_idx.y; y <= max_idx.y; ++y) {
-            ++processed;
-            const GridIndex idx{x, y, z};
-            if (!isInsideMetricBounds(idx) || isOccupiedCell(idx)) {
-                continue;
+                xy_pairs.push_back({x, y});
             }
-            if (isCellTraversable(
-                idx, robot_radius, require_ground_support, strict_direct_ground_support,
-                support_xy_radius_cells, support_depth_cells))
-            {
-                traversable_cells_.insert(idx);
-                if (lowest_traversable_only) {
-                break;
-                }
-            }
-            }
-        }
-        const int pct = static_cast<int>(processed * 100LL / total);
-        if (pct >= next_log_pct) {
-            printf("  Traversable layer: %d%% (%lld / %lld voxels, %zu traversable, %.1f s)\n",
-                   pct, static_cast<long long>(processed), static_cast<long long>(total),
-                   traversable_cells_.size(),
-                   (clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC));
-            next_log_pct = pct + 10;
-            if (next_log_pct > 100) next_log_pct = 100;
-        }
         }
 
-        printf("  Traversable layer: 100%% (%lld / %lld voxels, %zu traversable, %.1f s)\n",
-               static_cast<long long>(total), static_cast<long long>(total),
+        const int64_t total_xy = static_cast<int64_t>(xy_pairs.size());
+        const int64_t total_voxels = total_xy
+            * (static_cast<int64_t>(max_idx.z) - min_idx.z + 1);
+        std::atomic<int64_t> processed{0};
+        int next_log_pct = 10;
+
+        const int nt = (num_threads_ > 0) ? num_threads_ : 0;
+
+        printf("  Traversable layer: scanning %lld (x,y) columns (%lld voxels total), %d thread(s)...\n",
+               static_cast<long long>(total_xy), static_cast<long long>(total_voxels),
+               nt > 0 ? nt : omp_get_max_threads());
+
+#pragma omp parallel for num_threads(nt) schedule(dynamic, 64) if(nt != 1)
+        for (int64_t i = 0; i < total_xy; ++i) {
+            const int x = xy_pairs[static_cast<size_t>(i)].x;
+            const int y = xy_pairs[static_cast<size_t>(i)].y;
+
+            std::vector<GridIndex> local_results;
+
+            for (int z = min_idx.z; z <= max_idx.z; ++z) {
+                const GridIndex idx{x, y, z};
+                if (!isInsideMetricBounds(idx) || isOccupiedCell(idx)) {
+                    continue;
+                }
+                if (isCellTraversable(
+                    idx, robot_radius, require_ground_support, strict_direct_ground_support,
+                    support_xy_radius_cells, support_depth_cells))
+                {
+                    local_results.push_back(idx);
+                    if (lowest_traversable_only) {
+                        break;
+                    }
+                }
+            }
+
+            if (!local_results.empty()) {
+#pragma omp critical
+                for (const auto & g : local_results) {
+                    traversable_cells_.insert(g);
+                }
+            }
+
+            // 进度日志（仅主线程）
+            const int64_t done = processed.fetch_add(1) + 1;
+            const int pct = static_cast<int>(done * 100LL / total_xy);
+            if (pct >= next_log_pct) {
+#pragma omp critical
+                if (pct >= next_log_pct) {
+                    printf("  Traversable layer: %d%% (%lld / %lld columns, %zu traversable, %.1f s)\n",
+                           pct, static_cast<long long>(done), static_cast<long long>(total_xy),
+                           traversable_cells_.size(),
+                           (clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC));
+                    next_log_pct = pct + 10;
+                    if (next_log_pct > 100) next_log_pct = 100;
+                }
+            }
+        }
+
+        printf("  Traversable layer: 100%% (%lld / %lld columns, %zu traversable, %.1f s)\n",
+               static_cast<long long>(total_xy), static_cast<long long>(total_xy),
                traversable_cells_.size(),
                (clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC));
 
