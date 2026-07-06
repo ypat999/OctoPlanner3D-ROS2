@@ -1008,6 +1008,44 @@ namespace global_planner
         // 将 preblocked_cells_ 转为 vector 以便 OpenMP 随机访问
         std::vector<GridIndex> pb_vec(preblocked_cells_.begin(), preblocked_cells_.end());
 
+        // === 构建密集三维布尔网格（O(1) 无哈希查找，替代 unordered_set） ===
+        double min_x, min_y, min_z, max_x, max_y, max_z;
+        octree_->getMetricMin(min_x, min_y, min_z);
+        octree_->getMetricMax(max_x, max_y, max_z);
+        const GridIndex gmin = worldToGrid(min_x, min_y, min_z);
+        const GridIndex gmax = worldToGrid(max_x, max_y, max_z);
+        const int64_t dim_x = static_cast<int64_t>(gmax.x - gmin.x + 1);
+        const int64_t dim_y = static_cast<int64_t>(gmax.y - gmin.y + 1);
+        const int64_t dim_z = static_cast<int64_t>(gmax.z - gmin.z + 1);
+        const int64_t grid_size = dim_x * dim_y * dim_z;
+
+        if (grid_size <= 0 || grid_size > 2000000000LL) {
+            std::cout << "  Preblocked costmap: grid too large (" << grid_size << "), aborting." << std::endl;
+            return;
+        }
+
+        auto grid_linear = [&](const GridIndex & idx) -> int64_t {
+            return (static_cast<int64_t>(idx.x - gmin.x) * dim_y +
+                    static_cast<int64_t>(idx.y - gmin.y)) * dim_z +
+                    static_cast<int64_t>(idx.z - gmin.z);
+        };
+
+        std::vector<bool> traversable_grid(grid_size, false);
+        std::vector<bool> preblocked_grid(grid_size, false);
+        for (const auto & c : traversable_cells_) {
+            if (isInsideMetricBounds(c)) {
+                traversable_grid[grid_linear(c)] = true;
+            }
+        }
+        for (const auto & c : preblocked_cells_) {
+            if (isInsideMetricBounds(c)) {
+                preblocked_grid[grid_linear(c)] = true;
+            }
+        }
+        std::cout << "  Preblocked costmap: dense grid built (" << dim_x << "x" << dim_y << "x" << dim_z
+                  << " = " << grid_size << " cells) in "
+                  << ((clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC)) << " s" << std::endl;
+
         // 预计算邻居偏移（球体内的整数偏移）
         std::vector<GridIndex> neighbor_offsets;
         neighbor_offsets.reserve(static_cast<size_t>((2 * radius_cells + 1) * (2 * radius_cells + 1) * (2 * radius_cells + 1)));
@@ -1022,10 +1060,8 @@ namespace global_planner
                 }
             }
         }
-        std::cout << "  Preblocked costmap: " << neighbor_offsets.size() << " neighbor offsets precomputed in "
-                  << ((clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC)) << " s" << std::endl;
 
-        // 线程局部 costmap 向量，便于在进度日志中统计
+        // 线程局部 costmap 向量
         std::vector<std::unordered_map<GridIndex, double, GridIndexHash>> local_costmaps(num_threads);
 
         std::atomic<int64_t> processed{0};
@@ -1040,16 +1076,21 @@ namespace global_planner
 #pragma omp for schedule(dynamic, 32)
             for (int64_t i = 0; i < static_cast<int64_t>(pb_vec.size()); ++i) {
                 const auto & c = pb_vec[static_cast<size_t>(i)];
+                const int64_t base_lin = grid_linear(c);
 
                 for (const auto & off : neighbor_offsets) {
                     const GridIndex n{c.x + off.x, c.y + off.y, c.z + off.z};
                     if (!isInsideMetricBounds(n)) {
                         continue;
                     }
-                    if (traversable_cells_.find(n) == traversable_cells_.end()) {
+                    const int64_t n_lin = base_lin +
+                        off.x * dim_y * dim_z +
+                        off.y * dim_z +
+                        off.z;
+                    if (!traversable_grid[n_lin]) {
                         continue;
                     }
-                    if (preblocked_cells_.find(n) != preblocked_cells_.end()) {
+                    if (preblocked_grid[n_lin]) {
                         continue;
                     }
                     const double d = std::sqrt(
@@ -1066,7 +1107,6 @@ namespace global_planner
                 if (pct >= next_log_pct) {
 #pragma omp critical
                     if (pct >= next_log_pct) {
-                        // 统计所有线程的局部 costmap 大小
                         size_t total_local = 0;
                         for (const auto & lc : local_costmaps) {
                             total_local += lc.size();
