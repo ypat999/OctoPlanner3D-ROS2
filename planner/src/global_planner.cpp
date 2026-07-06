@@ -986,7 +986,6 @@ namespace global_planner
 
     void GlobalPlanner::rebuildPreblockedCostmap()
     {
-        std::cout << "GlobalPlanner::rebuildPreblockedCostmap rebuilding preblocked costmap... " << std::endl;
         preblocked_costmap_.clear();
         if (!octree_) {
         return;
@@ -1002,85 +1001,113 @@ namespace global_planner
 
         const clock_t build_start = clock();
         const size_t total_cells = preblocked_cells_.size();
-        std::cout << "  Preblocked costmap: spreading " << total_cells << " cells, radius " << radius_cells << ", " << (num_threads_ > 0 ? num_threads_ : omp_get_max_threads()) << " thread(s)..." << std::endl;
-
-        std::atomic<size_t> processed{0};
-        int next_log_pct = 10;
-
         const int nt = (num_threads_ > 0) ? num_threads_ : 0;
+        const int num_threads = nt > 0 ? nt : omp_get_max_threads();
+        std::cout << "  Preblocked costmap: spreading " << total_cells << " cells, radius " << radius_cells << ", " << num_threads << " thread(s)..." << std::endl;
 
         // 将 preblocked_cells_ 转为 vector 以便 OpenMP 随机访问
         std::vector<GridIndex> pb_vec(preblocked_cells_.begin(), preblocked_cells_.end());
 
+        // 预计算邻居偏移（球体内的整数偏移）
+        std::vector<GridIndex> neighbor_offsets;
+        neighbor_offsets.reserve(static_cast<size_t>((2 * radius_cells + 1) * (2 * radius_cells + 1) * (2 * radius_cells + 1)));
+        for (int dx = -radius_cells; dx <= radius_cells; ++dx) {
+            for (int dy = -radius_cells; dy <= radius_cells; ++dy) {
+                for (int dz = -radius_cells; dz <= radius_cells; ++dz) {
+                    if (dx == 0 && dy == 0 && dz == 0) continue;
+                    const double d = std::sqrt(static_cast<double>(dx * dx + dy * dy + dz * dz));
+                    if (d <= static_cast<double>(radius_cells)) {
+                        neighbor_offsets.push_back({dx, dy, dz});
+                    }
+                }
+            }
+        }
+        std::cout << "  Preblocked costmap: " << neighbor_offsets.size() << " neighbor offsets precomputed in "
+                  << ((clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC)) << " s" << std::endl;
+
+        // 线程局部 costmap 向量，便于在进度日志中统计
+        std::vector<std::unordered_map<GridIndex, double, GridIndexHash>> local_costmaps(num_threads);
+
+        std::atomic<int64_t> processed{0};
+        int next_log_pct = 10;
+
 #pragma omp parallel num_threads(nt) if(nt != 1)
         {
-            std::unordered_map<GridIndex, double, GridIndexHash> local_costmap;
+            const int tid = omp_get_thread_num();
+            auto & my_costmap = local_costmaps[tid];
+            my_costmap.reserve(total_cells / num_threads);
 
-#pragma omp for schedule(dynamic, 32) nowait
+#pragma omp for schedule(dynamic, 32)
             for (int64_t i = 0; i < static_cast<int64_t>(pb_vec.size()); ++i) {
                 const auto & c = pb_vec[static_cast<size_t>(i)];
-                for (int dx = -radius_cells; dx <= radius_cells; ++dx) {
-                    for (int dy = -radius_cells; dy <= radius_cells; ++dy) {
-                        for (int dz = -radius_cells; dz <= radius_cells; ++dz) {
-                            if (dx == 0 && dy == 0 && dz == 0) {
-                                continue;
-                            }
-                            const GridIndex n{c.x + dx, c.y + dy, c.z + dz};
-                            if (!isInsideMetricBounds(n)) {
-                                continue;
-                            }
-                            if (traversable_cells_.find(n) == traversable_cells_.end()) {
-                                continue;
-                            }
-                            if (preblocked_cells_.find(n) != preblocked_cells_.end()) {
-                                continue;
-                            }
-                            const double d = std::sqrt(
-                                static_cast<double>(dx * dx + dy * dy + dz * dz));
-                            if (d > static_cast<double>(radius_cells)) {
-                                continue;
-                            }
-                            const double cst = std::max(0.0, (denom - d) / denom);
-                            auto it = local_costmap.find(n);
-                            if (it == local_costmap.end() || cst > it->second) {
-                                local_costmap[n] = cst;
-                            }
-                        }
+
+                for (const auto & off : neighbor_offsets) {
+                    const GridIndex n{c.x + off.x, c.y + off.y, c.z + off.z};
+                    if (!isInsideMetricBounds(n)) {
+                        continue;
+                    }
+                    if (traversable_cells_.find(n) == traversable_cells_.end()) {
+                        continue;
+                    }
+                    if (preblocked_cells_.find(n) != preblocked_cells_.end()) {
+                        continue;
+                    }
+                    const double d = std::sqrt(
+                        static_cast<double>(off.x * off.x + off.y * off.y + off.z * off.z));
+                    const double cst = std::max(0.0, (denom - d) / denom);
+                    auto it = my_costmap.find(n);
+                    if (it == my_costmap.end() || cst > it->second) {
+                        my_costmap[n] = cst;
                     }
                 }
 
-                // 进度日志
                 const int64_t done = processed.fetch_add(1) + 1;
                 const int pct = static_cast<int>(done * 100LL / static_cast<int64_t>(total_cells));
                 if (pct >= next_log_pct) {
 #pragma omp critical
                     if (pct >= next_log_pct) {
-                        std::cout << "  Preblocked costmap: " << pct << "% (" << static_cast<long long>(done) << " / " << total_cells << " cells, " << preblocked_costmap_.size() << " costmap, " << ((clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC)) << " s)" << std::endl;
+                        // 统计所有线程的局部 costmap 大小
+                        size_t total_local = 0;
+                        for (const auto & lc : local_costmaps) {
+                            total_local += lc.size();
+                        }
+                        std::cout << "  Preblocked costmap: " << pct << "% ("
+                                  << static_cast<long long>(done) << " / " << total_cells
+                                  << " cells, " << total_local << " costmap, "
+                                  << ((clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC))
+                                  << " s)" << std::endl;
                         next_log_pct = pct + 10;
                         if (next_log_pct > 100) next_log_pct = 100;
                     }
                 }
             }
+        }
 
-            // 合并局部结果到全局 costmap（取最大值）
-#pragma omp critical
-            for (const auto & entry : local_costmap) {
+        // 合并局部结果到全局 costmap（取最大值）
+        const clock_t merge_start = clock();
+        for (const auto & lc : local_costmaps) {
+            for (const auto & entry : lc) {
                 auto it = preblocked_costmap_.find(entry.first);
                 if (it == preblocked_costmap_.end() || entry.second > it->second) {
                     preblocked_costmap_[entry.first] = entry.second;
                 }
             }
         }
+        std::cout << "  Preblocked costmap: merged " << preblocked_costmap_.size()
+                  << " entries in " << ((clock() - merge_start) / static_cast<double>(CLOCKS_PER_SEC))
+                  << " s" << std::endl;
 
-        std::cout << "  Preblocked costmap: 100% (" << total_cells << " / " << total_cells << " cells, " << preblocked_costmap_.size() << " costmap, " << ((clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC)) << " s)" << std::endl;
-
-        // RCLCPP_INFO(
-        // get_logger(),
-        // "Preblocked costmap rebuilt. cells=%zu radius=%d",
-        // preblocked_costmap_.size(), radius_cells);
-        // std::cout << "Preblocked costmap rebuilt. cells=" << preblocked_costmap_.size() << " radius=" << radius_cells << " " << std::endl;
-        // publishRiskCostCloud();
+        std::cout << "  Preblocked costmap: 100% done ("
+                  << preblocked_costmap_.size() << " costmap entries, "
+                  << ((clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC)) << " s)" << std::endl;
     }
+
+    // RCLCPP_INFO(
+    // get_logger(),
+    // "Preblocked costmap rebuilt. cells=%zu radius=%d",
+    // preblocked_costmap_.size(), radius_cells);
+    // std::cout << "Preblocked costmap rebuilt. cells=" << preblocked_costmap_.size() << " radius=" << radius_cells << " " << std::endl;
+    // publishRiskCostCloud();
 
 
 
