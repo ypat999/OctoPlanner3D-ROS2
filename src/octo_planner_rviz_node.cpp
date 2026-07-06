@@ -89,6 +89,9 @@ public:
     const std::string input_pcd = declare_parameter<std::string>("input_pcd", defaultInputPcd());
     const std::string output_bt =
       declare_parameter<std::string>("output_bt", "");  // 空 = 由 PCD 文件名自动推导
+    const double resolution = declare_parameter<double>("resolution", 0.2);
+    const int min_points_per_voxel = declare_parameter<int>("min_points_per_voxel", 2);
+    const int min_cluster_voxels = declare_parameter<int>("min_cluster_voxels", 2);
     const double map_publish_period =
       declare_parameter<double>("map_publish_period", 2.0);
 
@@ -97,6 +100,9 @@ public:
     if (!output_bt.empty()) {
       converter_->setOutputBtFile(output_bt);
     }
+    converter_->setResolution(resolution);
+    converter_->setMinPointsPerVoxel(min_points_per_voxel);
+    converter_->setMinClusterVoxels(min_cluster_voxels);
     planner_ = std::make_shared<global_planner::GlobalPlanner>();
 
     RCLCPP_INFO(get_logger(), "Building OctoMap from configured PCD file...");

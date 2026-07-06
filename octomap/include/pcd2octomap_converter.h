@@ -48,6 +48,9 @@ public:
 
   void setInputPcdFile(const std::string & input_pcd);
   void setOutputBtFile(const std::string & output_bt);
+  void setResolution(double resolution);
+  void setMinPointsPerVoxel(int min_points);
+  void setMinClusterVoxels(int min_cluster);
 
   // 查询接口
   bool isPointFree(const octomap::point3d & p) const;

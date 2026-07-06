@@ -54,6 +54,21 @@ void Pcd2OctomapConverter::setOutputBtFile(const std::string & output_bt)
   output_bt_ = output_bt;
 }
 
+void Pcd2OctomapConverter::setResolution(double resolution)
+{
+  resolution_ = resolution;
+}
+
+void Pcd2OctomapConverter::setMinPointsPerVoxel(int min_points)
+{
+  min_points_per_voxel_ = min_points;
+}
+
+void Pcd2OctomapConverter::setMinClusterVoxels(int min_cluster)
+{
+  min_cluster_voxels_ = min_cluster;
+}
+
 bool Pcd2OctomapConverter::convert()
 {
   std::cout << "[OctoPlanner] Converting " << input_pcd_ 
@@ -167,6 +182,9 @@ bool Pcd2OctomapConverter::saveCacheKey(std::size_t point_count) const
   f << input_pcd_ << "\n";
   f << pcd_stat.st_size << "\n";
   f << point_count << "\n";
+  f << resolution_ << "\n";
+  f << min_points_per_voxel_ << "\n";
+  f << min_cluster_voxels_ << "\n";
   return true;
 }
 
@@ -180,10 +198,16 @@ bool Pcd2OctomapConverter::checkCacheKey() const
   std::string stored_path;
   std::size_t stored_size = 0;
   std::size_t stored_points = 0;
+  double stored_resolution = 0.0;
+  int stored_min_points = 0;
+  int stored_min_cluster = 0;
 
   if (!std::getline(f, stored_path))    { return false; }
   if (!(f >> stored_size))              { return false; }
   if (!(f >> stored_points))            { return false; }
+  if (!(f >> stored_resolution))        { return false; }
+  if (!(f >> stored_min_points))        { return false; }
+  if (!(f >> stored_min_cluster))       { return false; }
 
   // PCD 路径必须一致
   if (stored_path != input_pcd_) {
@@ -213,6 +237,26 @@ bool Pcd2OctomapConverter::checkCacheKey() const
   if (current_points != stored_points) {
     std::cout << "[OctoPlanner] Cached PCD point count changed (" << current_points
               << " vs " << stored_points << "), rebuilding." << std::endl;
+    std::cout.flush();
+    return false;
+  }
+
+  // 检查参数是否变化
+  if (std::abs(stored_resolution - resolution_) > 1e-6) {
+    std::cout << "[OctoPlanner] Resolution changed (" << stored_resolution
+              << " vs " << resolution_ << "), rebuilding." << std::endl;
+    std::cout.flush();
+    return false;
+  }
+  if (stored_min_points != min_points_per_voxel_) {
+    std::cout << "[OctoPlanner] min_points_per_voxel changed (" << stored_min_points
+              << " vs " << min_points_per_voxel_ << "), rebuilding." << std::endl;
+    std::cout.flush();
+    return false;
+  }
+  if (stored_min_cluster != min_cluster_voxels_) {
+    std::cout << "[OctoPlanner] min_cluster_voxels changed (" << stored_min_cluster
+              << " vs " << min_cluster_voxels_ << "), rebuilding." << std::endl;
     std::cout.flush();
     return false;
   }

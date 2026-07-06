@@ -6,6 +6,11 @@
     # 输出 .bt 八叉树文件（不填则自动与 PCD 同名，e.g. 3dmap.pcd → 3dmap.bt）
     # output_bt: "result_cleaned.bt"
 
+    # OctoMap 构建参数
+    resolution: 0.1            # 体素分辨率（米），建议与 PCD 降采样分辨率一致
+    min_points_per_voxel: 1    # 每个体素至少需要的点数，已降采样的点云建议设为 1
+    min_cluster_voxels: 1      # 最小连通聚类体素数，已降采样的点云建议设为 1
+
     # RViz2 中使用的坐标框架
     frame_id: "map"
 
