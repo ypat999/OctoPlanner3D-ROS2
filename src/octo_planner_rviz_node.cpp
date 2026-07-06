@@ -168,10 +168,12 @@ public:
       std::bind(&OctoPlannerRvizNode::onClickedPoint, this, std::placeholders::_1));
 
     publishMap();
-    map_timer_ = create_wall_timer(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::duration<double>(std::max(0.1, map_publish_period))),
-      std::bind(&OctoPlannerRvizNode::publishMap, this));
+    if (map_publish_period > 0.0) {
+      map_timer_ = create_wall_timer(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::duration<double>(map_publish_period)),
+        std::bind(&OctoPlannerRvizNode::publishMap, this));
+    }
 
     RCLCPP_INFO(
       get_logger(),
@@ -323,18 +325,23 @@ private:
       return;
     }
 
+    RCLCPP_INFO(get_logger(), "Planning from [%.2f, %.2f, %.2f] to [%.2f, %.2f, %.2f]...",
+                start_.x, start_.y, start_.z, goal_.x, goal_.y, goal_.z);
+    const auto t_start = std::chrono::steady_clock::now();
     planner_->makePlan(start_, goal_);
+    const double plan_elapsed =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
 
     std::vector<global_planner::PointPose> path;
     planner_->getPlannerResults(path);
     if (path.empty()) {
-      RCLCPP_WARN(get_logger(), "Planner returned an empty path.");
+      RCLCPP_WARN(get_logger(), "Planner returned an empty path (%.2f s).", plan_elapsed);
       publishPath(path);
       return;
     }
 
     publishPath(path);
-    RCLCPP_INFO(get_logger(), "Published planned path with %zu poses.", path.size());
+    RCLCPP_INFO(get_logger(), "Published planned path with %zu poses (%.2f s).", path.size(), plan_elapsed);
   }
 
   void publishMap()

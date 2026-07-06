@@ -139,6 +139,14 @@ namespace global_planner
         const std::vector<GridIndex> directions = make26Directions();
         int iters = 0;
 
+        const clock_t plan_start = clock();
+        const int log_interval = std::max(1, max_iterations / 20);  // 每 5% 输出一次
+        int next_log_iter = log_interval;
+
+        printf("  A* planning: start=(%d,%d,%d) goal=(%d,%d,%d), max_iterations=%d, grid resolution=%.2f\n",
+               start.x, start.y, start.z, goal.x, goal.y, goal.z, max_iterations,
+               octree_->getResolution());
+
         while (!open_set.empty() && iters < max_iterations) 
         {
             const QueueNode current = open_set.top();
@@ -152,7 +160,9 @@ namespace global_planner
 
             if (current.idx == goal) {
                 const auto cells = reconstructPath(came_from, current.idx);
-                printf("GlobalPlanner::startPlan() A* path found in %d iterations. waypoints=%zu \n", iters, cells.size());
+                const double elapsed = (clock() - plan_start) / static_cast<double>(CLOCKS_PER_SEC);
+                printf("  A* planning: path found in %d iterations (%zu waypoints, %.1f s)\n",
+                       iters, cells.size(), elapsed);
                 planner_results_.clear();
                 for (std::size_t i = 0; i < cells.size(); ++i) 
                 {
@@ -166,6 +176,17 @@ namespace global_planner
                 }
 
                 return true;
+            }
+
+            // 进度日志
+            if (iters >= next_log_iter) {
+                const double elapsed = (clock() - plan_start) / static_cast<double>(CLOCKS_PER_SEC);
+                const auto cur_world = gridToWorld(current.idx);
+                printf("  A* planning: %d / %d iterations (%.0f%%), open=%zu, closed=%zu, dist_to_goal=%.1f, %.1f s\n",
+                       iters, max_iterations, 100.0 * iters / max_iterations,
+                       open_set.size(), closed_set.size(),
+                       euclidean(current.idx, goal) * octree_->getResolution(), elapsed);
+                next_log_iter = iters + log_interval;
             }
 
             for (const auto & d : directions) 
@@ -196,6 +217,9 @@ namespace global_planner
             }
         }
 
+        const double elapsed = (clock() - plan_start) / static_cast<double>(CLOCKS_PER_SEC);
+        printf("  A* planning: FAILED after %d / %d iterations (%.1f s), open=%zu, closed=%zu\n",
+               iters, max_iterations, elapsed, open_set.size(), closed_set.size());
         return false;
     }
 
