@@ -56,16 +56,23 @@ void Pcd2OctomapConverter::setOutputBtFile(const std::string & output_bt)
 
 bool Pcd2OctomapConverter::convert()
 {
+  std::cout << "[OctoPlanner] Converting " << input_pcd_ 
+            << "  →  " << output_bt_ << " ..." << std::endl;
+  std::cout.flush();
   const auto t_start = std::chrono::steady_clock::now();
 
   if (tryLoadCached()) {
     const double total_s =
       std::chrono::duration<double>(
         std::chrono::steady_clock::now() - t_start).count();
-    std::cout << "Loaded cached " << output_bt_ << " in " << total_s << " s." << std::endl;
+    std::cout << "[OctoPlanner] Loaded cached " << output_bt_ 
+              << " in " << total_s << " s." << std::endl;
+    std::cout.flush();
     return true;
   }
 
+  std::cout << "[OctoPlanner] Loading " << input_pcd_ << " ..." << std::endl;
+  std::cout.flush();
   if (!loadPointCloud()) {
     return false;
   }
@@ -84,8 +91,9 @@ bool Pcd2OctomapConverter::convert()
   const auto t_end = std::chrono::steady_clock::now();
   const double total_s =
     std::chrono::duration<double>(t_end - t_start).count();
-  std::cout << "\nConversion finished in " << total_s << " s. To visualize, run:\n";
-  std::cout << "octovis " << output_bt_ << std::endl;
+  std::cout << "\n[OctoPlanner] Conversion finished in " << total_s << " s. To visualize, run:\n";
+  std::cout << "[OctoPlanner] octovis " << output_bt_ << std::endl;
+  std::cout.flush();
 
   return true;
 }
@@ -96,15 +104,17 @@ bool Pcd2OctomapConverter::loadPointCloud()
   cloud_->clear();
 
   if (pcl::io::loadPCDFile<pcl::PointXYZ>(input_pcd_, *cloud_) == -1) {
-    std::cerr << "Couldn't read file " << input_pcd_ << std::endl;
+    std::cerr << "[OctoPlanner] Couldn't read file " << input_pcd_ << std::endl;
+    std::cerr.flush();
     return false;
   }
 
   const double load_s =
     std::chrono::duration<double>(
       std::chrono::steady_clock::now() - t0).count();
-  std::cout << "Loaded " << cloud_->size() << " points in "
+  std::cout << "[OctoPlanner] Loaded " << cloud_->size() << " points in "
             << load_s << " s." << std::endl;
+  std::cout.flush();
   return true;
 }
 
@@ -177,8 +187,9 @@ bool Pcd2OctomapConverter::checkCacheKey() const
 
   // PCD 路径必须一致
   if (stored_path != input_pcd_) {
-    std::cout << "Cached PCD path mismatch (" << stored_path
+    std::cout << "[OctoPlanner] Cached PCD path mismatch (" << stored_path
               << " vs " << input_pcd_ << "), rebuilding." << std::endl;
+    std::cout.flush();
     return false;
   }
 
@@ -188,8 +199,9 @@ bool Pcd2OctomapConverter::checkCacheKey() const
     return false;
   }
   if (static_cast<std::size_t>(pcd_stat.st_size) != stored_size) {
-    std::cout << "Cached PCD file size changed (" << pcd_stat.st_size
+    std::cout << "[OctoPlanner] Cached PCD file size changed (" << pcd_stat.st_size
               << " vs " << stored_size << "), rebuilding." << std::endl;
+    std::cout.flush();
     return false;
   }
 
@@ -199,8 +211,9 @@ bool Pcd2OctomapConverter::checkCacheKey() const
     return false;
   }
   if (current_points != stored_points) {
-    std::cout << "Cached PCD point count changed (" << current_points
+    std::cout << "[OctoPlanner] Cached PCD point count changed (" << current_points
               << " vs " << stored_points << "), rebuilding." << std::endl;
+    std::cout.flush();
     return false;
   }
 
@@ -223,13 +236,15 @@ bool Pcd2OctomapConverter::tryLoadCached()
 
   tree_ = std::make_shared<octomap::OcTree>(resolution_);
   if (!tree_->readBinary(output_bt_)) {
-    std::cerr << "Failed to load cached " << output_bt_ << std::endl;
+    std::cerr << "[OctoPlanner] Failed to load cached " << output_bt_ << std::endl;
+    std::cerr.flush();
     tree_.reset();
     return false;
   }
 
-  std::cout << "Cache valid, loaded " << output_bt_ << " ("
+  std::cout << "[OctoPlanner] Cache valid, loaded " << output_bt_ << " ("
             << bt_stat.st_size << " bytes)." << std::endl;
+  std::cout.flush();
   return true;
 }
 
@@ -270,10 +285,11 @@ void Pcd2OctomapConverter::buildVoxelCounts()
   const double elapsed =
     std::chrono::duration<double>(
       std::chrono::steady_clock::now() - t0).count();
-  std::cout << "\r  Voxelization: 100%  ("
+  std::cout << "\r[OctoPlanner]   Voxelization: 100%  ("
             << total << " / " << total << " points, "
             << voxel_counts_.size() << " unique voxels, "
             << elapsed << " s)" << std::endl;
+  std::cout.flush();
 }
 
 void Pcd2OctomapConverter::filterByPointCount()
@@ -286,15 +302,17 @@ void Pcd2OctomapConverter::filterByPointCount()
     }
   }
 
-  std::cout << "Voxels after point-count filtering: "
+  std::cout << "[OctoPlanner]   Voxels after point-count filtering: "
             << occupied_keys_.size() << std::endl;
+  std::cout.flush();
 }
 
 void Pcd2OctomapConverter::filterByConnectedClusters()
 {
   if (min_cluster_voxels_ <= 1 || occupied_keys_.empty()) {
-    std::cout << "Voxels after cluster filtering: "
+    std::cout << "[OctoPlanner]   Voxels after cluster filtering: "
               << occupied_keys_.size() << std::endl;
+    std::cout.flush();
     return;
   }
 
@@ -360,7 +378,7 @@ void Pcd2OctomapConverter::filterByConnectedClusters()
       const double elapsed =
         std::chrono::duration<double>(
           std::chrono::steady_clock::now() - t0).count();
-      std::cout << "\r  Cluster filtering: " << pct << "%  ("
+      std::cout << "\r[OctoPlanner]   Cluster filtering: " << pct << "%  ("
                 << processed_seeds << " / " << total_seeds << " seeds, "
                 << filtered_keys.size() << " kept, "
                 << elapsed << " s)" << std::flush;
@@ -372,10 +390,11 @@ void Pcd2OctomapConverter::filterByConnectedClusters()
   const double elapsed =
     std::chrono::duration<double>(
       std::chrono::steady_clock::now() - t0).count();
-  std::cout << "\r  Cluster filtering: 100%  ("
+  std::cout << "\r[OctoPlanner]   Cluster filtering: 100%  ("
             << total_seeds << " / " << total_seeds << " seeds, "
             << occupied_keys_.size() << " kept, "
             << elapsed << " s)" << std::endl;
+  std::cout.flush();
 }
 
 void Pcd2OctomapConverter::fillOcTree()
@@ -399,7 +418,7 @@ void Pcd2OctomapConverter::fillOcTree()
       const double elapsed =
         std::chrono::duration<double>(
           std::chrono::steady_clock::now() - t0).count();
-      std::cout << "\r  Filling OctoTree: " << pct << "%  ("
+      std::cout << "\r[OctoPlanner]   Filling OctoTree: " << pct << "%  ("
                 << processed << " / " << total << " voxels, "
                 << elapsed << " s)" << std::flush;
     }
@@ -410,9 +429,10 @@ void Pcd2OctomapConverter::fillOcTree()
   const double elapsed =
     std::chrono::duration<double>(
       std::chrono::steady_clock::now() - t0).count();
-  std::cout << "\r  Filling OctoTree: 100%  ("
+  std::cout << "\r[OctoPlanner]   Filling OctoTree: 100%  ("
             << total << " / " << total << " voxels, "
             << elapsed << " s)" << std::endl;
+  std::cout.flush();
 }
 
 bool Pcd2OctomapConverter::saveOctomap() const
@@ -420,7 +440,8 @@ bool Pcd2OctomapConverter::saveOctomap() const
   const auto t0 = std::chrono::steady_clock::now();
 
   if (!tree_) {
-    std::cerr << "OcTree is null, cannot save." << std::endl;
+    std::cerr << "[OctoPlanner] OcTree is null, cannot save." << std::endl;
+    std::cerr.flush();
     return false;
   }
 
@@ -431,12 +452,14 @@ bool Pcd2OctomapConverter::saveOctomap() const
       std::chrono::steady_clock::now() - t0).count();
 
   if (ok) {
-    std::cout << "Saved " << output_bt_ << " in " << elapsed << " s." << std::endl;
+    std::cout << "[OctoPlanner] Saved " << output_bt_ << " in " << elapsed << " s." << std::endl;
+    std::cout.flush();
     saveCacheKey(cloud_->size());
     return true;
   }
 
-  std::cerr << "Failed to save " << output_bt_ << std::endl;
+  std::cerr << "[OctoPlanner] Failed to save " << output_bt_ << std::endl;
+  std::cerr.flush();
   return false;
 }
 
