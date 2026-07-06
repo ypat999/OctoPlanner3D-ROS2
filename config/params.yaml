@@ -7,7 +7,7 @@
     # output_bt: "result_cleaned.bt"
 
     # OctoMap 构建参数
-    resolution: 0.2            # 体素分辨率（米），建议与 PCD 降采样分辨率一致
+    resolution: 0.4            # 体素分辨率（米），建议与 PCD 降采样分辨率一致
     min_points_per_voxel: 1    # 每个体素至少需要的点数，已降采样的点云建议设为 1
     min_cluster_voxels: 1      # 最小连通聚类体素数，已降采样的点云建议设为 1
 
