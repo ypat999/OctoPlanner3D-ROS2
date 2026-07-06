@@ -1,10 +1,10 @@
 /**:
   ros__parameters:
     # 输入 PCD 点云文件路径
-    input_pcd: "/home/ztl/slam_data/3d_map/3dmap.pcd"
+    input_pcd: "/home/ywj/slam_data/3d_map/3dmap.pcd"
 
-    # 输出 .bt 八叉树文件
-    output_bt: "result_cleaned.bt"
+    # 输出 .bt 八叉树文件（不填则自动与 PCD 同名，e.g. 3dmap.pcd → 3dmap.bt）
+    # output_bt: "result_cleaned.bt"
 
     # RViz2 中使用的坐标框架
     frame_id: "map"

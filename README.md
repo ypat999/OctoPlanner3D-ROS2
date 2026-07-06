@@ -36,7 +36,11 @@ RViz2 可视化运行效果如下：
 ## 编译方法
 
 ```bash
-colcon build
+# 克隆仓库（含 submodule）
+git clone --recurse-submodules https://github.com/ypat999/OctoPlanner3D-ROS2.git
+
+# 编译
+colcon build --packages-select octo_planner3d
 ````
 
 编译完成后，加载环境变量：
@@ -49,8 +53,16 @@ source install/setup.bash
 
 ## 运行方法
 
+推荐使用 launch 文件启动（自动加载参数）：
+
 ```bash
-ros2 run octo_planner3d octo_planner_rviz_node
+ros2 launch octo_planner3d octo_planner3d.launch.py
+```
+
+也可直接运行节点并手动传参：
+
+```bash
+ros2 run octo_planner3d octo_planner_rviz_node --ros-args -p input_pcd:="/path/to/your/map.pcd"
 ```
 
 运行后可在 RViz2 中查看：
@@ -64,14 +76,14 @@ ros2 run octo_planner3d octo_planner_rviz_node
 
 ## 通过 RViz2 下发起点和终点
 
-本项目支持通过 RViz2 的 `Publish Point` 工具交互式设置规划起点和终点。
+本项目支持通过 RViz2 的 `Publish Point` 工具交互式设置规划起点和终点，所有参数通过 `config/params.yaml` 配置。
 
 使用方式如下：
 
 1. 启动节点：
 
 ```bash
-ros2 run octo_planner3d octo_planner_rviz_node
+ros2 launch octo_planner3d octo_planner3d.launch.py
 ```
 
 2. 打开 RViz2：

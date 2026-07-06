@@ -16,6 +16,8 @@
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <std_msgs/msg/color_rgba.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
@@ -85,13 +87,16 @@ public:
     const std::string clicked_point_topic =
       declare_parameter<std::string>("clicked_point_topic", "clicked_point");
     const std::string input_pcd = declare_parameter<std::string>("input_pcd", defaultInputPcd());
-    const std::string output_bt = declare_parameter<std::string>("output_bt", "result_cleaned.bt");
+    const std::string output_bt =
+      declare_parameter<std::string>("output_bt", "");  // 空 = 由 PCD 文件名自动推导
     const double map_publish_period =
       declare_parameter<double>("map_publish_period", 2.0);
 
     converter_ = std::make_shared<pcd2octomap::Pcd2OctomapConverter>();
     converter_->setInputPcdFile(input_pcd);
-    converter_->setOutputBtFile(output_bt);
+    if (!output_bt.empty()) {
+      converter_->setOutputBtFile(output_bt);
+    }
     planner_ = std::make_shared<global_planner::GlobalPlanner>();
 
     RCLCPP_INFO(get_logger(), "Building OctoMap from configured PCD file...");
@@ -105,6 +110,8 @@ public:
 
     const auto transient_qos = rclcpp::QoS(1).transient_local().reliable();
     map_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("occupied_map", transient_qos);
+    map_cloud_pub_ =
+      create_publisher<sensor_msgs::msg::PointCloud2>("occupied_map_cloud", transient_qos);
     path_pub_ = create_publisher<nav_msgs::msg::Path>("planned_path", transient_qos);
     path_marker_pub_ =
       create_publisher<visualization_msgs::msg::Marker>("planned_path_marker", transient_qos);
@@ -234,11 +241,16 @@ private:
     const double z_range = std::max(1.0e-6, max_z - min_z);
     const float alpha = static_cast<float>(std::clamp(map_alpha_, 0.05, 1.0));
 
+    // --- MarkerArray（按大小分组，按高度着色） ---
     std::unordered_map<double, visualization_msgs::msg::Marker> markers_by_size;
+    // --- PointCloud2 计数 ---
+    size_t point_count = 0;
+
     for (auto it = octree_->begin_leafs(); it != octree_->end_leafs(); ++it) {
       if (!octree_->isNodeOccupied(*it)) {
         continue;
       }
+      ++point_count;
 
       const double size = it.getSize();
       auto marker_it = markers_by_size.find(size);
@@ -252,9 +264,6 @@ private:
         marker.scale.x = size;
         marker.scale.y = size;
         marker.scale.z = size;
-
-        // 全部体素统一暗色
-        // marker.color = makeColor(0.35F, 0.18F, 0.06F, alpha);
         marker.color = makeColor(0.45F, 0.22F, 0.06F, alpha);
         marker_it = markers_by_size.emplace(size, std::move(marker)).first;
       }
@@ -262,24 +271,80 @@ private:
       marker_it->second.points.push_back(makePoint(it.getX(), it.getY(), it.getZ()));
     }
 
-    visualization_msgs::msg::MarkerArray array;
-    int id = 0;
-    for (auto & entry : markers_by_size) {
-      auto & marker = entry.second;
-      marker.header.stamp = now();
-      marker.id = id++;
-      array.markers.push_back(marker);
+    // MarkerArray publish
+    {
+      visualization_msgs::msg::MarkerArray array;
+      int id = 0;
+      for (auto & entry : markers_by_size) {
+        auto & marker = entry.second;
+        marker.header.stamp = now();
+        marker.colors.resize(marker.points.size());
+        for (size_t i = 0; i < marker.points.size(); ++i) {
+          const double t = (marker.points[i].z - min_z) / z_range;
+          marker.colors[i] = heightColor(t, alpha);
+        }
+        marker.id = id++;
+        array.markers.push_back(std::move(marker));
+      }
+
+      visualization_msgs::msg::Marker cleanup;
+      cleanup.header.frame_id = frame_id_;
+      cleanup.header.stamp = now();
+      cleanup.ns = "occupied_voxels_cleanup";
+      cleanup.id = 0;
+      cleanup.action = visualization_msgs::msg::Marker::DELETEALL;
+      array.markers.insert(array.markers.begin(), cleanup);
+
+      map_pub_->publish(array);
     }
 
-    visualization_msgs::msg::Marker cleanup;
-    cleanup.header.frame_id = frame_id_;
-    cleanup.header.stamp = now();
-    cleanup.ns = "occupied_voxels_cleanup";
-    cleanup.id = 0;
-    cleanup.action = visualization_msgs::msg::Marker::DELETEALL;
-    array.markers.insert(array.markers.begin(), cleanup);
+    // --- PointCloud2 publish ---
+    if (map_cloud_pub_ && point_count > 0) {
+      sensor_msgs::msg::PointCloud2 cloud_msg;
+      cloud_msg.header.frame_id = frame_id_;
+      cloud_msg.header.stamp = now();
+      cloud_msg.height = 1;
+      cloud_msg.width = static_cast<uint32_t>(point_count);
+      cloud_msg.is_bigendian = false;
+      cloud_msg.is_dense = true;
 
-    map_pub_->publish(array);
+      // fields: x, y, z (FLOAT32 each)
+      cloud_msg.fields.resize(3);
+      cloud_msg.fields[0].name = "x";
+      cloud_msg.fields[0].offset = 0;
+      cloud_msg.fields[0].datatype = sensor_msgs::msg::PointField::FLOAT32;
+      cloud_msg.fields[0].count = 1;
+      cloud_msg.fields[1].name = "y";
+      cloud_msg.fields[1].offset = 4;
+      cloud_msg.fields[1].datatype = sensor_msgs::msg::PointField::FLOAT32;
+      cloud_msg.fields[1].count = 1;
+      cloud_msg.fields[2].name = "z";
+      cloud_msg.fields[2].offset = 8;
+      cloud_msg.fields[2].datatype = sensor_msgs::msg::PointField::FLOAT32;
+      cloud_msg.fields[2].count = 1;
+
+      cloud_msg.point_step = 12;
+      cloud_msg.row_step = cloud_msg.point_step * cloud_msg.width;
+      cloud_msg.data.resize(cloud_msg.row_step);
+
+      // fill data
+      {
+        sensor_msgs::PointCloud2Iterator<float> iter_x(cloud_msg, "x");
+        sensor_msgs::PointCloud2Iterator<float> iter_y(cloud_msg, "y");
+        sensor_msgs::PointCloud2Iterator<float> iter_z(cloud_msg, "z");
+        for (auto it = octree_->begin_leafs(); it != octree_->end_leafs(); ++it) {
+          if (!octree_->isNodeOccupied(*it)) {
+            continue;
+          }
+          *iter_x = static_cast<float>(it.getX());
+          *iter_y = static_cast<float>(it.getY());
+          *iter_z = static_cast<float>(it.getZ());
+          ++iter_x; ++iter_y; ++iter_z;
+        }
+      }
+
+      map_cloud_pub_->publish(cloud_msg);
+    }
   }
 
   std_msgs::msg::ColorRGBA heightColor(double t, float alpha) const
@@ -391,6 +456,7 @@ private:
   std::shared_ptr<octomap::OcTree> octree_;
 
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr map_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_cloud_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr path_marker_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr start_marker_pub_;

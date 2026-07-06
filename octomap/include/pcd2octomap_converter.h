@@ -66,6 +66,10 @@ public:
 
 private:
   bool loadPointCloud();
+  bool tryLoadCached();
+  bool saveCacheKey(std::size_t point_count) const;
+  bool checkCacheKey() const;
+  bool readPcdHeader(std::size_t & out_point_count) const;
   void buildVoxelCounts();
   void filterByPointCount();
   void filterByConnectedClusters();
