@@ -1,4 +1,5 @@
 #include "global_planner.h"
+#include <cmath>
 
 namespace global_planner
 {
@@ -617,10 +618,146 @@ namespace global_planner
         // publishRiskCostCloud();
     }
 
+    void GlobalPlanner::setOctomapRaw(std::shared_ptr<octomap::OcTree> map)
+    {
+        octree_ = map;
+        map_ready_ = (map != nullptr);
+    }
 
+    static const uint64_t kPlannerCacheMagic = 0x4F43544F50505250ULL;  // "OCTOPPR\0" in little-endian
 
+    bool GlobalPlanner::savePrecomputedData(const std::string & file) const
+    {
+        if (!octree_ || preblocked_cells_.empty()) {
+            return false;
+        }
 
+        std::ofstream f(file, std::ios::binary);
+        if (!f.is_open()) {
+            return false;
+        }
 
+        const double res = octree_->getResolution();
+        const uint64_t num_leafs = octree_->getNumLeafNodes();
+        const uint64_t preblocked_count = preblocked_cells_.size();
+        const uint64_t traversable_count = traversable_cells_.size();
+        const uint64_t costmap_count = preblocked_costmap_.size();
 
+        // Header
+        f.write(reinterpret_cast<const char *>(&kPlannerCacheMagic), sizeof(kPlannerCacheMagic));
+        f.write(reinterpret_cast<const char *>(&num_leafs), sizeof(num_leafs));
+        f.write(reinterpret_cast<const char *>(&res), sizeof(res));
+        f.write(reinterpret_cast<const char *>(&preblocked_count), sizeof(preblocked_count));
+        f.write(reinterpret_cast<const char *>(&traversable_count), sizeof(traversable_count));
+        f.write(reinterpret_cast<const char *>(&costmap_count), sizeof(costmap_count));
+
+        // preblocked_cells_
+        for (const auto & cell : preblocked_cells_) {
+            int32_t v[3] = {cell.x, cell.y, cell.z};
+            f.write(reinterpret_cast<const char *>(v), sizeof(v));
+        }
+
+        // traversable_cells_
+        for (const auto & cell : traversable_cells_) {
+            int32_t v[3] = {cell.x, cell.y, cell.z};
+            f.write(reinterpret_cast<const char *>(v), sizeof(v));
+        }
+
+        // preblocked_costmap_
+        for (const auto & entry : preblocked_costmap_) {
+            int32_t v[3] = {entry.first.x, entry.first.y, entry.first.z};
+            f.write(reinterpret_cast<const char *>(v), sizeof(v));
+            const double cost = entry.second;
+            f.write(reinterpret_cast<const char *>(&cost), sizeof(cost));
+        }
+
+        printf("Planner cache saved: %s (%lu preblocked, %lu traversable, %lu costmap entries)\n",
+               file.c_str(),
+               (unsigned long)preblocked_count, (unsigned long)traversable_count,
+               (unsigned long)costmap_count);
+        return f.good();
+    }
+
+    bool GlobalPlanner::loadPrecomputedData(const std::string & file)
+    {
+        std::ifstream f(file, std::ios::binary);
+        if (!f.is_open()) {
+            return false;
+        }
+
+        uint64_t magic = 0;
+        f.read(reinterpret_cast<char *>(&magic), sizeof(magic));
+        if (!f || magic != kPlannerCacheMagic) {
+            return false;
+        }
+
+        uint64_t num_leafs = 0;
+        double res = 0.0;
+        uint64_t preblocked_count = 0;
+        uint64_t traversable_count = 0;
+        uint64_t costmap_count = 0;
+
+        f.read(reinterpret_cast<char *>(&num_leafs), sizeof(num_leafs));
+        f.read(reinterpret_cast<char *>(&res), sizeof(res));
+        f.read(reinterpret_cast<char *>(&preblocked_count), sizeof(preblocked_count));
+        f.read(reinterpret_cast<char *>(&traversable_count), sizeof(traversable_count));
+        f.read(reinterpret_cast<char *>(&costmap_count), sizeof(costmap_count));
+
+        if (!f) {
+            return false;
+        }
+
+        // Validate cache against current octree
+        if (!octree_) {
+            return false;
+        }
+        if (std::abs(octree_->getResolution() - res) > 1e-6) {
+            printf("Planner cache resolution mismatch, rebuilding.\n");
+            return false;
+        }
+        if (octree_->getNumLeafNodes() != num_leafs) {
+            printf("Planner cache leaf count changed, rebuilding.\n");
+            return false;
+        }
+
+        // Read preblocked_cells_
+        preblocked_cells_.clear();
+        preblocked_cells_.reserve(static_cast<size_t>(preblocked_count));
+        for (size_t i = 0; i < preblocked_count; ++i) {
+            int32_t v[3];
+            f.read(reinterpret_cast<char *>(v), sizeof(v));
+            if (!f) { return false; }
+            preblocked_cells_.insert({v[0], v[1], v[2]});
+        }
+
+        // Read traversable_cells_
+        traversable_cells_.clear();
+        traversable_cells_.reserve(static_cast<size_t>(traversable_count));
+        for (size_t i = 0; i < traversable_count; ++i) {
+            int32_t v[3];
+            f.read(reinterpret_cast<char *>(v), sizeof(v));
+            if (!f) { return false; }
+            traversable_cells_.insert({v[0], v[1], v[2]});
+        }
+
+        // Read preblocked_costmap_
+        preblocked_costmap_.clear();
+        preblocked_costmap_.reserve(static_cast<size_t>(costmap_count));
+        for (size_t i = 0; i < costmap_count; ++i) {
+            int32_t v[3];
+            double cost;
+            f.read(reinterpret_cast<char *>(v), sizeof(v));
+            f.read(reinterpret_cast<char *>(&cost), sizeof(cost));
+            if (!f) { return false; }
+            preblocked_costmap_[{v[0], v[1], v[2]}] = cost;
+        }
+
+        map_ready_ = true;
+        printf("Planner cache loaded: %s (%lu preblocked, %lu traversable, %lu costmap entries)\n",
+               file.c_str(),
+               (unsigned long)preblocked_cells_.size(), (unsigned long)traversable_cells_.size(),
+               (unsigned long)preblocked_costmap_.size());
+        return true;
+    }
 
 }

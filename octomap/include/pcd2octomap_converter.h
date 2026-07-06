@@ -48,6 +48,7 @@ public:
 
   void setInputPcdFile(const std::string & input_pcd);
   void setOutputBtFile(const std::string & output_bt);
+  std::string getOutputBtFile() const { return output_bt_; }
   void setResolution(double resolution);
   void setMinPointsPerVoxel(int min_points);
   void setMinClusterVoxels(int min_cluster);

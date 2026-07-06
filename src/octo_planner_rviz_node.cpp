@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <string>
@@ -26,6 +28,12 @@ namespace
 {
 
 constexpr double kZeroZThreshold = 1.0e-6;
+
+struct CachedVoxel
+{
+  float x, y, z;
+  float size;
+};
 
 std::string defaultInputPcd()
 {
@@ -112,7 +120,33 @@ public:
     }
 
     octree_ = converter_->getOctomap();
-    planner_->setOctomap(octree_);
+
+    // 尝试加载规划器预计算缓存
+    const std::string planner_cache =
+      converter_->getOutputBtFile() + "_planner";
+    planner_->setOctomapRaw(octree_);  // 先设置 octree 指针供验证用
+    const bool cache_loaded = planner_->loadPrecomputedData(planner_cache);
+    if (cache_loaded) {
+      RCLCPP_INFO(get_logger(), "Loaded planner cache from %s", planner_cache.c_str());
+    } else {
+      RCLCPP_INFO(get_logger(), "Building planner derived data (this may take a while)...");
+      planner_->setOctomap(octree_);  // 完整重建
+      planner_->savePrecomputedData(planner_cache);
+    }
+
+    // 预计算地图可视化缓存（遍历八叉树最耗时，只做一次）
+    {
+      const std::string voxel_cache =
+        converter_->getOutputBtFile() + "_voxels";
+      loadVoxelCache(voxel_cache);
+      if (!cached_voxels_.empty()) {
+        RCLCPP_INFO(get_logger(), "Loaded %zu cached voxels from %s",
+                    cached_voxels_.size(), voxel_cache.c_str());
+      }
+    }
+    if (cached_voxels_.empty()) {
+      preCacheMapData();
+    }
 
     const auto transient_qos = rclcpp::QoS(1).transient_local().reliable();
     map_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("occupied_map", transient_qos);
@@ -210,6 +244,85 @@ private:
     planIfReady();
   }
 
+  void preCacheMapData()
+  {
+    cached_voxels_.clear();
+    if (!octree_) {
+      return;
+    }
+
+    RCLCPP_INFO(get_logger(), "Pre-caching map voxel data...");
+    const auto t_start = std::chrono::steady_clock::now();
+
+    const size_t total_leafs = octree_->getNumLeafNodes();
+    const size_t report_interval = std::max(size_t(1), total_leafs / 10);
+    size_t processed = 0;
+
+    for (auto it = octree_->begin_leafs(); it != octree_->end_leafs(); ++it) {
+      if (!octree_->isNodeOccupied(*it)) {
+        continue;
+      }
+      CachedVoxel voxel;
+      voxel.x = static_cast<float>(it.getX());
+      voxel.y = static_cast<float>(it.getY());
+      voxel.z = static_cast<float>(it.getZ());
+      voxel.size = static_cast<float>(it.getSize());
+      cached_voxels_.push_back(voxel);
+
+      ++processed;
+      if (processed % report_interval == 0) {
+        const int pct = static_cast<int>(processed * 100 / total_leafs);
+        const double elapsed =
+          std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - t_start).count();
+        RCLCPP_INFO(get_logger(),
+          "Pre-caching: %d%% (%zu / %zu nodes, %zu occupied voxels, %.1f s)",
+          pct, processed, total_leafs, cached_voxels_.size(), elapsed);
+      }
+    }
+
+    const double total_s =
+      std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - t_start).count();
+    RCLCPP_INFO(get_logger(), "Pre-cached %zu occupied voxels in %.1f s.",
+                cached_voxels_.size(), total_s);
+  }
+
+  void saveVoxelCache(const std::string & cache_file) const
+  {
+    if (cached_voxels_.empty()) {
+      return;
+    }
+    std::ofstream f(cache_file, std::ios::binary);
+    if (!f.is_open()) {
+      return;
+    }
+    const uint64_t count = cached_voxels_.size();
+    f.write(reinterpret_cast<const char *>(&count), sizeof(count));
+    f.write(reinterpret_cast<const char *>(cached_voxels_.data()),
+            count * sizeof(CachedVoxel));
+  }
+
+  void loadVoxelCache(const std::string & cache_file)
+  {
+    cached_voxels_.clear();
+    std::ifstream f(cache_file, std::ios::binary);
+    if (!f.is_open()) {
+      return;
+    }
+    uint64_t count = 0;
+    f.read(reinterpret_cast<char *>(&count), sizeof(count));
+    if (!f || count == 0) {
+      return;
+    }
+    cached_voxels_.resize(count);
+    f.read(reinterpret_cast<char *>(cached_voxels_.data()),
+           count * sizeof(CachedVoxel));
+    if (!f) {
+      cached_voxels_.clear();
+    }
+  }
+
   void planIfReady()
   {
     if (!planner_ || !octree_ || !has_start_ || !has_goal_) {
@@ -232,43 +345,39 @@ private:
 
   void publishMap()
   {
-    if (!octree_ || !map_pub_) {
+    if (!octree_ || !map_pub_ || cached_voxels_.empty()) {
       return;
     }
 
     const auto t_start = std::chrono::steady_clock::now();
 
-    double min_x = 0.0;
-    double min_y = 0.0;
-    double min_z = 0.0;
-    double max_x = 0.0;
-    double max_y = 0.0;
-    double max_z = 0.0;
-    octree_->getMetricMin(min_x, min_y, min_z);
-    octree_->getMetricMax(max_x, max_y, max_z);
+    double min_x = cached_voxels_[0].x;
+    double min_y = cached_voxels_[0].y;
+    double min_z = cached_voxels_[0].z;
+    double max_x = min_x;
+    double max_y = min_y;
+    double max_z = min_z;
+
+    for (const auto & v : cached_voxels_) {
+      if (v.x < min_x) min_x = v.x;
+      if (v.y < min_y) min_y = v.y;
+      if (v.z < min_z) min_z = v.z;
+      if (v.x > max_x) max_x = v.x;
+      if (v.y > max_y) max_y = v.y;
+      if (v.z > max_z) max_z = v.z;
+    }
+
     const double z_range = std::max(1.0e-6, max_z - min_z);
     const float alpha = static_cast<float>(std::clamp(map_alpha_, 0.05, 1.0));
 
-    RCLCPP_INFO(get_logger(), "Publishing map...");
+    RCLCPP_INFO(get_logger(), "Publishing map (%zu voxels)...", cached_voxels_.size());
 
-    std::unordered_map<double, visualization_msgs::msg::Marker> markers_by_size;
+    std::unordered_map<float, visualization_msgs::msg::Marker> markers_by_size;
     std::vector<geometry_msgs::msg::Point> cloud_points;
+    cloud_points.reserve(cached_voxels_.size());
 
-    size_t total_processed = 0;
-    const size_t total_leafs = octree_->getNumLeafNodes();
-    const size_t report_interval = std::max(size_t(1), total_leafs / 10);
-
-    for (auto it = octree_->begin_leafs(); it != octree_->end_leafs(); ++it) {
-      if (!octree_->isNodeOccupied(*it)) {
-        continue;
-      }
-
-      const double x = it.getX();
-      const double y = it.getY();
-      const double z = it.getZ();
-      const double size = it.getSize();
-
-      auto marker_it = markers_by_size.find(size);
+    for (const auto & v : cached_voxels_) {
+      auto marker_it = markers_by_size.find(v.size);
       if (marker_it == markers_by_size.end()) {
         visualization_msgs::msg::Marker marker;
         marker.header.frame_id = frame_id_;
@@ -276,29 +385,17 @@ private:
         marker.type = visualization_msgs::msg::Marker::CUBE_LIST;
         marker.action = visualization_msgs::msg::Marker::ADD;
         marker.pose.orientation.w = 1.0;
-        marker.scale.x = size;
-        marker.scale.y = size;
-        marker.scale.z = size;
+        marker.scale.x = v.size;
+        marker.scale.y = v.size;
+        marker.scale.z = v.size;
         marker.color = makeColor(0.45F, 0.22F, 0.06F, alpha);
-        marker_it = markers_by_size.emplace(size, std::move(marker)).first;
+        marker_it = markers_by_size.emplace(v.size, std::move(marker)).first;
       }
 
-      auto pt = makePoint(x, y, z);
+      auto pt = makePoint(v.x, v.y, v.z);
       marker_it->second.points.push_back(pt);
       cloud_points.push_back(pt);
-
-      ++total_processed;
-      if (total_processed % report_interval == 0) {
-        const int pct = static_cast<int>(total_processed * 100 / total_leafs);
-        const double elapsed =
-          std::chrono::duration<double>(
-            std::chrono::steady_clock::now() - t_start).count();
-        RCLCPP_INFO(get_logger(), "Publishing map: %d%% (%zu / %zu nodes, %zu occupied)",
-                    pct, total_processed, total_leafs, cloud_points.size());
-      }
     }
-
-    RCLCPP_INFO(get_logger(), "Map traversal done: %zu occupied voxels", cloud_points.size());
 
     {
       visualization_msgs::msg::MarkerArray array;
@@ -481,6 +578,7 @@ private:
   std::shared_ptr<pcd2octomap::Pcd2OctomapConverter> converter_;
   std::shared_ptr<global_planner::GlobalPlanner> planner_;
   std::shared_ptr<octomap::OcTree> octree_;
+  std::vector<CachedVoxel> cached_voxels_;
 
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr map_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_cloud_pub_;
