@@ -663,7 +663,13 @@ namespace global_planner
 
     bool GlobalPlanner::savePlanningCache(const std::string & cache_path) const
     {
-        // 格式: [4B version][8B count_traversable][count_traversable × GridIndex]
+        // 格式: [4B version=2]
+        //       [8B resolution][8B robot_radius]
+        //       [1B require_ground_support][1B strict_direct_ground_support]
+        //       [4B support_xy_radius_cells][4B support_depth_cells]
+        //       [1B lowest_traversable_only][1B enable_preblocked_costmap]
+        //       [4B preblocked_costmap_radius_cells][8B preblocked_costmap_weight]
+        //       [8B count_traversable][count_traversable × GridIndex]
         //       [8B count_preblocked][count_preblocked × GridIndex]
         //       [8B count_costmap][count_costmap × (GridIndex + double)]
         std::ofstream f(cache_path, std::ios::binary);
@@ -672,8 +678,31 @@ namespace global_planner
             return false;
         }
 
-        const uint32_t version = 1;
+        const uint32_t version = 2;
         f.write(reinterpret_cast<const char *>(&version), sizeof(version));
+
+        // 参数校验头
+        const double resolution = octree_ ? octree_->getResolution() : 0.0;
+        const double r_radius = robot_radius_;
+        const uint8_t u_require_gs = require_ground_support_ ? 1 : 0;
+        const uint8_t u_strict = strict_direct_ground_support_ ? 1 : 0;
+        const int32_t i_support_xy = static_cast<int32_t>(ground_support_xy_radius_cells_);
+        const int32_t i_support_d = static_cast<int32_t>(ground_support_depth_cells_);
+        const uint8_t u_lowest = lowest_traversable_only_ ? 1 : 0;
+        const uint8_t u_enable_pc = enable_preblocked_costmap_ ? 1 : 0;
+        const int32_t i_pc_radius = static_cast<int32_t>(preblocked_costmap_radius_cells_);
+        const double d_pc_weight = preblocked_costmap_weight_;
+
+        f.write(reinterpret_cast<const char *>(&resolution), sizeof(resolution));
+        f.write(reinterpret_cast<const char *>(&r_radius), sizeof(r_radius));
+        f.write(reinterpret_cast<const char *>(&u_require_gs), sizeof(u_require_gs));
+        f.write(reinterpret_cast<const char *>(&u_strict), sizeof(u_strict));
+        f.write(reinterpret_cast<const char *>(&i_support_xy), sizeof(i_support_xy));
+        f.write(reinterpret_cast<const char *>(&i_support_d), sizeof(i_support_d));
+        f.write(reinterpret_cast<const char *>(&u_lowest), sizeof(u_lowest));
+        f.write(reinterpret_cast<const char *>(&u_enable_pc), sizeof(u_enable_pc));
+        f.write(reinterpret_cast<const char *>(&i_pc_radius), sizeof(i_pc_radius));
+        f.write(reinterpret_cast<const char *>(&d_pc_weight), sizeof(d_pc_weight));
 
         uint64_t count;
 
@@ -711,9 +740,77 @@ namespace global_planner
 
         uint32_t version = 0;
         f.read(reinterpret_cast<char *>(&version), sizeof(version));
-        if (!f || version != 1) {
-            printf("GlobalPlanner: planning cache version mismatch (%u), rebuilding.\n", version);
+        if (!f || version == 0) {
             return false;
+        }
+
+        // 参数校验（v2+）
+        if (version >= 2) {
+            double stored_resolution = 0.0, stored_robot_radius = 0.0;
+            uint8_t stored_require_gs = 0, stored_strict = 0;
+            int32_t stored_support_xy = 0, stored_support_d = 0;
+            uint8_t stored_lowest = 0, stored_enable_pc = 0;
+            int32_t stored_pc_radius = 0;
+            double stored_pc_weight = 0.0;
+
+            f.read(reinterpret_cast<char *>(&stored_resolution), sizeof(stored_resolution));
+            f.read(reinterpret_cast<char *>(&stored_robot_radius), sizeof(stored_robot_radius));
+            f.read(reinterpret_cast<char *>(&stored_require_gs), sizeof(stored_require_gs));
+            f.read(reinterpret_cast<char *>(&stored_strict), sizeof(stored_strict));
+            f.read(reinterpret_cast<char *>(&stored_support_xy), sizeof(stored_support_xy));
+            f.read(reinterpret_cast<char *>(&stored_support_d), sizeof(stored_support_d));
+            f.read(reinterpret_cast<char *>(&stored_lowest), sizeof(stored_lowest));
+            f.read(reinterpret_cast<char *>(&stored_enable_pc), sizeof(stored_enable_pc));
+            f.read(reinterpret_cast<char *>(&stored_pc_radius), sizeof(stored_pc_radius));
+            f.read(reinterpret_cast<char *>(&stored_pc_weight), sizeof(stored_pc_weight));
+            if (!f) return false;
+
+            const double cur_resolution = octree_ ? octree_->getResolution() : 0.0;
+            const auto mismatch = [&](const char * name, auto stored, auto current) {
+                printf("GlobalPlanner: %s changed (%s vs %s), rebuilding planning cache.\n",
+                       name, std::to_string(stored).c_str(), std::to_string(current).c_str());
+            };
+
+            bool ok = true;
+            if (std::abs(stored_resolution - cur_resolution) > 1e-6) {
+                mismatch("resolution", stored_resolution, cur_resolution); ok = false;
+            }
+            if (std::abs(stored_robot_radius - robot_radius_) > 1e-6) {
+                mismatch("robot_radius", stored_robot_radius, robot_radius_); ok = false;
+            }
+            if (static_cast<bool>(stored_require_gs) != require_ground_support_) {
+                mismatch("require_ground_support", static_cast<int>(stored_require_gs),
+                         static_cast<int>(require_ground_support_)); ok = false;
+            }
+            if (static_cast<bool>(stored_strict) != strict_direct_ground_support_) {
+                mismatch("strict_direct_ground_support", static_cast<int>(stored_strict),
+                         static_cast<int>(strict_direct_ground_support_)); ok = false;
+            }
+            if (stored_support_xy != static_cast<int32_t>(ground_support_xy_radius_cells_)) {
+                mismatch("ground_support_xy_radius_cells", stored_support_xy,
+                         static_cast<int32_t>(ground_support_xy_radius_cells_)); ok = false;
+            }
+            if (stored_support_d != static_cast<int32_t>(ground_support_depth_cells_)) {
+                mismatch("ground_support_depth_cells", stored_support_d,
+                         static_cast<int32_t>(ground_support_depth_cells_)); ok = false;
+            }
+            if (static_cast<bool>(stored_lowest) != lowest_traversable_only_) {
+                mismatch("lowest_traversable_only", static_cast<int>(stored_lowest),
+                         static_cast<int>(lowest_traversable_only_)); ok = false;
+            }
+            if (static_cast<bool>(stored_enable_pc) != enable_preblocked_costmap_) {
+                mismatch("enable_preblocked_costmap", static_cast<int>(stored_enable_pc),
+                         static_cast<int>(enable_preblocked_costmap_)); ok = false;
+            }
+            if (stored_pc_radius != static_cast<int32_t>(preblocked_costmap_radius_cells_)) {
+                mismatch("preblocked_costmap_radius_cells", stored_pc_radius,
+                         static_cast<int32_t>(preblocked_costmap_radius_cells_)); ok = false;
+            }
+            if (std::abs(stored_pc_weight - preblocked_costmap_weight_) > 1e-6) {
+                mismatch("preblocked_costmap_weight", stored_pc_weight,
+                         preblocked_costmap_weight_); ok = false;
+            }
+            if (!ok) return false;
         }
 
         uint64_t count;

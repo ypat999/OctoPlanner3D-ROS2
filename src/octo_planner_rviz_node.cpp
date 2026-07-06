@@ -293,6 +293,10 @@ private:
     if (!f.is_open()) {
       return;
     }
+    const uint32_t version = 2;
+    const double resolution = octree_->getResolution();
+    f.write(reinterpret_cast<const char *>(&version), sizeof(version));
+    f.write(reinterpret_cast<const char *>(&resolution), sizeof(resolution));
     const uint64_t count = cached_voxels_.size();
     f.write(reinterpret_cast<const char *>(&count), sizeof(count));
     f.write(reinterpret_cast<const char *>(cached_voxels_.data()),
@@ -305,6 +309,22 @@ private:
     std::ifstream f(cache_file, std::ios::binary);
     if (!f.is_open()) {
       return;
+    }
+    uint32_t version = 0;
+    f.read(reinterpret_cast<char *>(&version), sizeof(version));
+    if (!f || version == 0) {
+      return;
+    }
+    if (version >= 2) {
+      double stored_resolution = 0.0;
+      f.read(reinterpret_cast<char *>(&stored_resolution), sizeof(stored_resolution));
+      if (!f) return;
+      const double current_resolution = octree_->getResolution();
+      if (std::abs(stored_resolution - current_resolution) > 1e-6) {
+        RCLCPP_WARN(get_logger(), "Voxel cache resolution mismatch (%.4f vs %.4f), discarding.",
+                    stored_resolution, current_resolution);
+        return;
+      }
     }
     uint64_t count = 0;
     f.read(reinterpret_cast<char *>(&count), sizeof(count));
