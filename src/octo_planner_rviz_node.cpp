@@ -100,6 +100,8 @@ public:
     const double resolution = declare_parameter<double>("resolution", 0.2);
     const int min_points_per_voxel = declare_parameter<int>("min_points_per_voxel", 2);
     const int min_cluster_voxels = declare_parameter<int>("min_cluster_voxels", 2);
+    const double map_publish_period =
+      declare_parameter<double>("map_publish_period", 2.0);
 
     converter_ = std::make_shared<pcd2octomap::Pcd2OctomapConverter>();
     converter_->setInputPcdFile(input_pcd);
@@ -118,19 +120,7 @@ public:
     }
 
     octree_ = converter_->getOctomap();
-
-    // 尝试加载规划器预计算缓存
-    const std::string planner_cache =
-      converter_->getOutputBtFile() + "_planner";
-    planner_->setOctomapRaw(octree_);  // 先设置 octree 指针供验证用
-    const bool cache_loaded = planner_->loadPrecomputedData(planner_cache);
-    if (cache_loaded) {
-      RCLCPP_INFO(get_logger(), "Loaded planner cache from %s", planner_cache.c_str());
-    } else {
-      RCLCPP_INFO(get_logger(), "Building planner derived data (this may take a while)...");
-      planner_->setOctomap(octree_);  // 完整重建
-      planner_->savePrecomputedData(planner_cache);
-    }
+    planner_->setOctomap(octree_);
 
     // 预计算地图可视化缓存（遍历八叉树最耗时，只做一次）
     {
@@ -141,9 +131,12 @@ public:
         RCLCPP_INFO(get_logger(), "Loaded %zu cached voxels from %s",
                     cached_voxels_.size(), voxel_cache.c_str());
       }
-    }
-    if (cached_voxels_.empty()) {
-      preCacheMapData();
+      if (cached_voxels_.empty()) {
+        preCacheMapData();
+        saveVoxelCache(voxel_cache);
+        RCLCPP_INFO(get_logger(), "Saved %zu voxels to %s",
+                    cached_voxels_.size(), voxel_cache.c_str());
+      }
     }
 
     const auto transient_qos = rclcpp::QoS(1).transient_local().reliable();
@@ -171,7 +164,11 @@ public:
       rclcpp::QoS(10),
       std::bind(&OctoPlannerRvizNode::onClickedPoint, this, std::placeholders::_1));
 
-    publishMap();  // 地图不变，发布一次即可（transient_local 保证晚订阅者也能收到）
+    publishMap();
+    map_timer_ = create_wall_timer(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::duration<double>(std::max(0.1, map_publish_period))),
+      std::bind(&OctoPlannerRvizNode::publishMap, this));
 
     RCLCPP_INFO(
       get_logger(),
@@ -583,6 +580,7 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr start_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr clicked_point_sub_;
+  rclcpp::TimerBase::SharedPtr map_timer_;
 };
 
 int main(int argc, char ** argv)

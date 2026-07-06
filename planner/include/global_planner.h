@@ -16,7 +16,6 @@
 #include <unordered_set>
 #include <vector>
 #include <queue>
-#include <fstream>
 
 #include "octomap/OcTree.h"
 
@@ -76,13 +75,6 @@ public:
   ~GlobalPlanner();
 
   void setOctomap(std::shared_ptr<octomap::OcTree> map);
-
-  // 直接设置 octree 指针，不触发重建（用于从缓存恢复时）
-  void setOctomapRaw(std::shared_ptr<octomap::OcTree> map);
-
-  // 保存/加载预计算数据（preblocked_cells, traversable_cells, preblocked_costmap）
-  bool savePrecomputedData(const std::string & file) const;
-  bool loadPrecomputedData(const std::string & file);
 
   void makePlan(const PointPose start,const PointPose goal);
 
