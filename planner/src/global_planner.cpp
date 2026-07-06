@@ -492,15 +492,25 @@ namespace global_planner
         const double robot_radius = robot_radius_;
         const bool lowest_traversable_only = lowest_traversable_only_;
 
+        const clock_t build_start = clock();
+
         double min_x, min_y, min_z, max_x, max_y, max_z;
         octree_->getMetricMin(min_x, min_y, min_z);
         octree_->getMetricMax(max_x, max_y, max_z);
         const GridIndex min_idx = worldToGrid(min_x, min_y, min_z);
         const GridIndex max_idx = worldToGrid(max_x, max_y, max_z);
 
+        const int64_t total_z = static_cast<int64_t>(max_idx.z) - min_idx.z + 1;
+        const int64_t total_per_z = (static_cast<int64_t>(max_idx.x) - min_idx.x + 1)
+                                  * (static_cast<int64_t>(max_idx.y) - min_idx.y + 1);
+        const int64_t total = total_z * total_per_z;
+        int64_t processed = 0;
+        int next_log_pct = 10;
+
+        for (int z = min_idx.z; z <= max_idx.z; ++z) {
         for (int x = min_idx.x; x <= max_idx.x; ++x) {
-        for (int y = min_idx.y; y <= max_idx.y; ++y) {
-            for (int z = min_idx.z; z <= max_idx.z; ++z) {
+            for (int y = min_idx.y; y <= max_idx.y; ++y) {
+            ++processed;
             const GridIndex idx{x, y, z};
             if (!isInsideMetricBounds(idx) || isOccupiedCell(idx)) {
                 continue;
@@ -516,7 +526,21 @@ namespace global_planner
             }
             }
         }
+        const int pct = static_cast<int>(processed * 100LL / total);
+        if (pct >= next_log_pct) {
+            printf("  Traversable layer: %d%% (%lld / %lld voxels, %zu traversable, %.1f s)\n",
+                   pct, static_cast<long long>(processed), static_cast<long long>(total),
+                   traversable_cells_.size(),
+                   (clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC));
+            next_log_pct = pct + 10;
+            if (next_log_pct > 100) next_log_pct = 100;
         }
+        }
+
+        printf("  Traversable layer: 100%% (%lld / %lld voxels, %zu traversable, %.1f s)\n",
+               static_cast<long long>(total), static_cast<long long>(total),
+               traversable_cells_.size(),
+               (clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC));
 
         // publishCellSetMarker(
         // traversable_cells_, traversable_marker_pub_, "traversable_cells", 0.20F, 0.95F, 0.55F,
