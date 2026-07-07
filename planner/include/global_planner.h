@@ -88,6 +88,19 @@ public:
   /** 设置 OpenMP 并行线程数（0 = 使用默认线程数） */
   void setNumThreads(int n) { num_threads_ = n; }
 
+  /** 设置规划参数（与机器人尺寸和导航行为相关） */
+  void setRobotRadius(double radius) { robot_radius_ = radius; }
+  void setMaxIterations(int max_iter) { max_iterations_ = max_iter; }
+  void setSnapSearchRadiusCells(int radius) { snap_search_radius_cells_ = radius; }
+  void setRequireGroundSupport(bool enable) { require_ground_support_ = enable; }
+  void setStrictDirectGroundSupport(bool enable) { strict_direct_ground_support_ = enable; }
+  void setGroundSupportXYRadiusCells(int radius) { ground_support_xy_radius_cells_ = radius; }
+  void setGroundSupportDepthCells(int depth) { ground_support_depth_cells_ = depth; }
+  void setEnablePreblockedCostmap(bool enable) { enable_preblocked_costmap_ = enable; }
+  void setPreblockedCostmapRadiusCells(int radius) { preblocked_costmap_radius_cells_ = radius; }
+  void setPreblockedCostmapWeight(double weight) { preblocked_costmap_weight_ = weight; }
+  void setLowestTraversableOnly(bool enable) { lowest_traversable_only_ = enable; }
+
   void makePlan(const PointPose start,const PointPose goal);
 
   void getPlannerResults(std::vector<PointPose>& plannerResults);

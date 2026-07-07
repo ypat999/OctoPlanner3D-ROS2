@@ -114,9 +114,22 @@ public:
     // nav2 集成参数
     enable_nav2_integration_ = declare_parameter<bool>("enable_nav2_integration", false);
     robot_base_frame_ = declare_parameter<std::string>("robot_base_frame", "base_footprint");
-    odom_frame_ = declare_parameter<std::string>("odom_frame", "odom");
+    map_frame_ = declare_parameter<std::string>("map_frame", "map");
     transform_timeout_ = declare_parameter<double>("transform_timeout", 0.5);
     path_orientation_mode_ = declare_parameter<std::string>("path_orientation_mode", "interpolate");
+
+    // 规划参数（与机器人尺寸和导航行为相关）
+    const double robot_radius = declare_parameter<double>("robot_radius", 0.25);
+    const int max_iterations = declare_parameter<int>("max_iterations", 800000);
+    const int snap_search_radius_cells = declare_parameter<int>("snap_search_radius_cells", 12);
+    const bool require_ground_support = declare_parameter<bool>("require_ground_support", true);
+    const bool strict_direct_ground_support = declare_parameter<bool>("strict_direct_ground_support", false);
+    const int ground_support_xy_radius_cells = declare_parameter<int>("ground_support_xy_radius_cells", 1);
+    const int ground_support_depth_cells = declare_parameter<int>("ground_support_depth_cells", 1);
+    const bool enable_preblocked_costmap = declare_parameter<bool>("enable_preblocked_costmap", true);
+    const int preblocked_costmap_radius_cells = declare_parameter<int>("preblocked_costmap_radius_cells", 3);
+    const double preblocked_costmap_weight = declare_parameter<double>("preblocked_costmap_weight", 2.5);
+    const bool lowest_traversable_only = declare_parameter<bool>("lowest_traversable_only", false);
 
     converter_ = std::make_shared<pcd2octomap::Pcd2OctomapConverter>();
     converter_->setInputPcdFile(input_pcd);
@@ -128,6 +141,19 @@ public:
     converter_->setMinClusterVoxels(min_cluster_voxels);
     planner_ = std::make_shared<global_planner::GlobalPlanner>();
     planner_->setNumThreads(openmp_num_threads);
+
+    // 设置规划参数
+    planner_->setRobotRadius(robot_radius);
+    planner_->setMaxIterations(max_iterations);
+    planner_->setSnapSearchRadiusCells(snap_search_radius_cells);
+    planner_->setRequireGroundSupport(require_ground_support);
+    planner_->setStrictDirectGroundSupport(strict_direct_ground_support);
+    planner_->setGroundSupportXYRadiusCells(ground_support_xy_radius_cells);
+    planner_->setGroundSupportDepthCells(ground_support_depth_cells);
+    planner_->setEnablePreblockedCostmap(enable_preblocked_costmap);
+    planner_->setPreblockedCostmapRadiusCells(preblocked_costmap_radius_cells);
+    planner_->setPreblockedCostmapWeight(preblocked_costmap_weight);
+    planner_->setLowestTraversableOnly(lowest_traversable_only);
 
     RCLCPP_INFO(get_logger(), "Building OctoMap from configured PCD file...");
     if (!converter_->convert()) {
@@ -695,7 +721,7 @@ private:
   // nav2 集成相关成员变量
   bool enable_nav2_integration_ = false;
   std::string robot_base_frame_ = "base_footprint";
-  std::string odom_frame_ = "odom";
+  std::string map_frame_ = "map";
   double transform_timeout_ = 0.5;
   std::string path_orientation_mode_ = "interpolate";
   geometry_msgs::msg::Quaternion goal_orientation_;  // 保存目标的朝向
