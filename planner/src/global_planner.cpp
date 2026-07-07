@@ -39,6 +39,7 @@ namespace global_planner
         rebuildPreblockedCells();
         rebuildDerivedLayers();
         rebuildPreblockedCostmap();
+        buildTraversableGrid();
     }
 
     void GlobalPlanner::makePlan(const PointPose start,const PointPose goal)
@@ -132,22 +133,41 @@ namespace global_planner
             std::cout << "GlobalPlanner::startPlan() Goal snapped to free cell: [" << p.x() << ", " << p.y() << ", " << p.z() << "] " << std::endl;
         }
 
+        const int64_t grid_size = grid_dim_x_ * grid_dim_y_ * grid_dim_z_;
+        const double INF = 1e20;
+
+        std::vector<double> g_score(grid_size, INF);
+        std::vector<int64_t> came_from(grid_size, -1);
+        std::vector<bool> closed_set(grid_size, false);
+
+        const int64_t start_lin = gridLinear(start);
+        g_score[start_lin] = 0.0;
+
         std::priority_queue<QueueNode, std::vector<QueueNode>, QueueNodeCompare> open_set;
-        std::unordered_map<GridIndex, double, GridIndexHash> g_score;
-        std::unordered_map<GridIndex, GridIndex, GridIndexHash> came_from;
-        std::unordered_set<GridIndex, GridIndexHash> closed_set;
 
-        g_score[start] = 0.0;
-        open_set.push(QueueNode{start, euclidean(start, goal), 0.0});
+        const auto h_start = euclidean(start, goal);
+        open_set.push(QueueNode{start, h_start, 0.0});
 
-        const std::vector<GridIndex> directions = make26Directions();
+        std::vector<std::pair<GridIndex, double>> directions;
+        directions.reserve(26);
+        for (int dx = -1; dx <= 1; ++dx) {
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dz = -1; dz <= 1; ++dz) {
+                    if (dx == 0 && dy == 0 && dz == 0) continue;
+                    const double dist = std::sqrt(static_cast<double>(dx*dx + dy*dy + dz*dz));
+                    directions.emplace_back(GridIndex{dx, dy, dz}, dist);
+                }
+            }
+        }
+
         int iters = 0;
-
         const clock_t plan_start = clock();
-        const int log_interval = std::max(1, max_iterations / 20);  // 每 5% 输出一次
+        const int log_interval = std::max(1, max_iterations / 20);
         int next_log_iter = log_interval;
 
-        std::cout << "  A* planning: start=(" << start.x << "," << start.y << "," << start.z << ") goal=(" << goal.x << "," << goal.y << "," << goal.z << "), max_iterations=" << max_iterations << ", grid resolution=" << octree_->getResolution() << std::endl;
+        std::cout << "  A* planning: start=(" << start.x << "," << start.y << "," << start.z << ") goal=(" << goal.x << "," << goal.y << "," << goal.z << "), max_iterations=" << max_iterations << ", grid resolution=" << octree_->getResolution() << ", grid_size=" << grid_size << std::endl;
+
+        const int64_t goal_lin = gridLinear(goal);
 
         while (!open_set.empty() && iters < max_iterations) 
         {
@@ -155,19 +175,35 @@ namespace global_planner
             open_set.pop();
             ++iters;
 
-            if (closed_set.find(current.idx) != closed_set.end()) {
+            const int64_t cur_lin = gridLinear(current.idx);
+            if (closed_set[cur_lin]) {
                 continue;
             }
-            closed_set.insert(current.idx);
+            closed_set[cur_lin] = true;
 
-            if (current.idx == goal) {
-                const auto cells = reconstructPath(came_from, current.idx);
+            if (cur_lin == goal_lin) {
+                std::vector<GridIndex> path;
+                GridIndex c = current.idx;
+                int64_t lin = cur_lin;
+                path.push_back(c);
+                while (came_from[lin] >= 0) {
+                    const int64_t parent_lin = came_from[lin];
+                    const int64_t z = parent_lin % grid_dim_z_;
+                    const int64_t rem = parent_lin / grid_dim_z_;
+                    const int64_t y = rem % grid_dim_y_;
+                    const int64_t x = rem / grid_dim_y_;
+                    c = GridIndex{static_cast<int>(x + grid_min_.x), static_cast<int>(y + grid_min_.y), static_cast<int>(z + grid_min_.z)};
+                    path.push_back(c);
+                    lin = parent_lin;
+                }
+                std::reverse(path.begin(), path.end());
+
                 const double elapsed = (clock() - plan_start) / static_cast<double>(CLOCKS_PER_SEC);
-                std::cout << "  A* planning: path found in " << iters << " iterations (" << cells.size() << " waypoints, " << elapsed << " s)" << std::endl;
+                std::cout << "  A* planning: path found in " << iters << " iterations (" << path.size() << " waypoints, " << elapsed << " s)" << std::endl;
                 planner_results_.clear();
-                for (std::size_t i = 0; i < cells.size(); ++i) 
+                for (std::size_t i = 0; i < path.size(); ++i) 
                 {
-                    const auto & c = cells[i];
+                    const auto & c = path[i];
                     const auto p = gridToWorld(c);
                     PointPose temp;
                     temp.x = p.x();
@@ -175,48 +211,57 @@ namespace global_planner
                     temp.z = p.z();
                     planner_results_.push_back(temp);
                 }
-
                 return true;
             }
 
-            // 进度日志
             if (iters >= next_log_iter) {
                 const double elapsed = (clock() - plan_start) / static_cast<double>(CLOCKS_PER_SEC);
                 const auto cur_world = gridToWorld(current.idx);
-                std::cout << "  A* planning: " << iters << " / " << max_iterations << " iterations (" << (100.0 * iters / max_iterations) << "%), open=" << open_set.size() << ", closed=" << closed_set.size() << ", dist_to_goal=" << (euclidean(current.idx, goal) * octree_->getResolution()) << ", " << elapsed << " s" << std::endl;
+                const double dist_to_goal = std::sqrt(
+                    static_cast<double>((current.idx.x - goal.x) * (current.idx.x - goal.x) +
+                                        (current.idx.y - goal.y) * (current.idx.y - goal.y) +
+                                        (current.idx.z - goal.z) * (current.idx.z - goal.z))) * octree_->getResolution();
+                int closed_count = 0;
+                for (bool b : closed_set) if (b) closed_count++;
+                std::cout << "  A* planning: " << iters << " / " << max_iterations << " iterations (" << (100.0 * iters / max_iterations) << "%), open=" << open_set.size() << ", closed=" << closed_count << ", dist_to_goal=" << dist_to_goal << ", " << elapsed << " s" << std::endl;
                 next_log_iter = iters + log_interval;
             }
 
-            for (const auto & d : directions) 
+            for (const auto & dir : directions) 
             {
-                GridIndex nbr{current.idx.x + d.x, current.idx.y + d.y, current.idx.z + d.z};
-                if (closed_set.find(nbr) != closed_set.end()) {
-                continue;
-                }
-                if (!isCellTraversable(
-                    nbr, robot_radius, require_ground_support, strict_direct_ground_support,
-                    support_xy_radius_cells, support_depth_cells))
-                {
-                continue;
-                }
-                const double step_cost = euclidean(current.idx, nbr);
-                double tentative_g = current.g + step_cost;
-                if (enable_preblocked_costmap) {
-                tentative_g += preblocked_costmap_weight * getPreblockedCost(nbr);
+                GridIndex nbr{current.idx.x + dir.first.x, current.idx.y + dir.first.y, current.idx.z + dir.first.z};
+
+                if (!isTraversableGrid(nbr)) {
+                    continue;
                 }
 
-                auto g_it = g_score.find(nbr);
-                if (g_it == g_score.end() || tentative_g < g_it->second) {
-                came_from[nbr] = current.idx;
-                g_score[nbr] = tentative_g;
-                const double f = tentative_g + euclidean(nbr, goal);
-                open_set.push(QueueNode{nbr, f, tentative_g});
+                const int64_t nbr_lin = gridLinear(nbr);
+                if (closed_set[nbr_lin]) {
+                    continue;
+                }
+
+                double tentative_g = current.g + dir.second;
+                if (enable_preblocked_costmap) {
+                    tentative_g += preblocked_costmap_weight * getPreblockedCostGrid(nbr);
+                }
+
+                if (tentative_g < g_score[nbr_lin]) {
+                    came_from[nbr_lin] = cur_lin;
+                    g_score[nbr_lin] = tentative_g;
+                    const double h = std::sqrt(
+                        static_cast<double>((nbr.x - goal.x) * (nbr.x - goal.x) +
+                                            (nbr.y - goal.y) * (nbr.y - goal.y) +
+                                            (nbr.z - goal.z) * (nbr.z - goal.z)));
+                    const double f = tentative_g + h;
+                    open_set.push(QueueNode{nbr, f, tentative_g});
                 }
             }
         }
 
         const double elapsed = (clock() - plan_start) / static_cast<double>(CLOCKS_PER_SEC);
-        std::cout << "  A* planning: FAILED after " << iters << " / " << max_iterations << " iterations (" << elapsed << " s), open=" << open_set.size() << ", closed=" << closed_set.size() << std::endl;
+        int closed_count = 0;
+        for (bool b : closed_set) if (b) closed_count++;
+        std::cout << "  A* planning: FAILED after " << iters << " / " << max_iterations << " iterations (" << elapsed << " s), open=" << open_set.size() << ", closed=" << closed_count << std::endl;
         return false;
     }
 
@@ -696,6 +741,49 @@ namespace global_planner
         // 0.55F);
     }
 
+    void GlobalPlanner::buildTraversableGrid() {
+        if (!octree_) {
+            return;
+        }
+        const clock_t build_start = clock();
+
+        double min_x, min_y, min_z, max_x, max_y, max_z;
+        octree_->getMetricMin(min_x, min_y, min_z);
+        octree_->getMetricMax(max_x, max_y, max_z);
+        grid_min_ = worldToGrid(min_x, min_y, min_z);
+        grid_max_ = worldToGrid(max_x, max_y, max_z);
+        grid_dim_x_ = static_cast<int64_t>(grid_max_.x - grid_min_.x + 1);
+        grid_dim_y_ = static_cast<int64_t>(grid_max_.y - grid_min_.y + 1);
+        grid_dim_z_ = static_cast<int64_t>(grid_max_.z - grid_min_.z + 1);
+
+        const int64_t grid_size = grid_dim_x_ * grid_dim_y_ * grid_dim_z_;
+        if (grid_size <= 0 || grid_size > 2000000000LL) {
+            std::cout << "  Traversable grid: grid too large (" << grid_size << "), skipping." << std::endl;
+            return;
+        }
+
+        traversable_grid_.resize(grid_size, false);
+        preblocked_cost_grid_.resize(grid_size, 0.0);
+
+        for (const auto & c : traversable_cells_) {
+            const int64_t lin = gridLinear(c);
+            if (lin >= 0 && lin < grid_size) {
+                traversable_grid_[lin] = true;
+            }
+        }
+
+        for (const auto & entry : preblocked_costmap_) {
+            const int64_t lin = gridLinear(entry.first);
+            if (lin >= 0 && lin < grid_size) {
+                preblocked_cost_grid_[lin] = entry.second;
+            }
+        }
+
+        std::cout << "  Traversable grid: built " << grid_dim_x_ << "x" << grid_dim_y_ << "x" << grid_dim_z_
+                  << " = " << grid_size << " cells in "
+                  << ((clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC)) << " s" << std::endl;
+    }
+
     bool GlobalPlanner::isInsideMetricBounds(const GridIndex & idx) const
     {
         double min_x, min_y, min_z, max_x, max_y, max_z;
@@ -974,6 +1062,7 @@ namespace global_planner
 
         if (loadPlanningCache(cache_path)) {
             std::cout << "GlobalPlanner: using cached planning layers." << std::endl;
+            buildTraversableGrid();
             return;
         }
 
@@ -982,6 +1071,7 @@ namespace global_planner
         rebuildDerivedLayers();
         rebuildPreblockedCostmap();
         savePlanningCache(cache_path);
+        buildTraversableGrid();
     }
 
     void GlobalPlanner::rebuildPreblockedCostmap()

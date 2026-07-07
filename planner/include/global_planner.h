@@ -143,6 +143,8 @@ private:
 
   void rebuildDerivedLayers();
 
+  void buildTraversableGrid();
+
   /** 将 traversable_cells_ / preblocked_cells_ / preblocked_costmap_ 保存到二进制文件 */
   bool savePlanningCache(const std::string & cache_path) const;
   /** 从二进制文件加载规划层缓存，成功返回 true */
@@ -230,6 +232,37 @@ private:
   std::unordered_set<GridIndex, GridIndexHash> preblocked_cells_;
   std::unordered_set<GridIndex, GridIndexHash> external_preblocked_cells_;
   std::unordered_map<GridIndex, double, GridIndexHash> preblocked_costmap_;
+
+  GridIndex grid_min_, grid_max_;
+  int64_t grid_dim_x_, grid_dim_y_, grid_dim_z_;
+  std::vector<bool> traversable_grid_;
+  std::vector<double> preblocked_cost_grid_;
+
+  inline int64_t gridLinear(const GridIndex & idx) const {
+    return ((static_cast<int64_t>(idx.x - grid_min_.x) * grid_dim_y_ +
+             static_cast<int64_t>(idx.y - grid_min_.y)) * grid_dim_z_ +
+            static_cast<int64_t>(idx.z - grid_min_.z));
+  }
+
+  inline bool isTraversableGrid(const GridIndex & idx) const {
+    if (idx.x < grid_min_.x || idx.x > grid_max_.x ||
+        idx.y < grid_min_.y || idx.y > grid_max_.y ||
+        idx.z < grid_min_.z || idx.z > grid_max_.z) {
+      return false;
+    }
+    const int64_t lin = gridLinear(idx);
+    return lin >= 0 && lin < static_cast<int64_t>(traversable_grid_.size()) && traversable_grid_[lin];
+  }
+
+  inline double getPreblockedCostGrid(const GridIndex & idx) const {
+    if (idx.x < grid_min_.x || idx.x > grid_max_.x ||
+        idx.y < grid_min_.y || idx.y > grid_max_.y ||
+        idx.z < grid_min_.z || idx.z > grid_max_.z) {
+      return 0.0;
+    }
+    const int64_t lin = gridLinear(idx);
+    return lin >= 0 && lin < static_cast<int64_t>(preblocked_cost_grid_.size()) ? preblocked_cost_grid_[lin] : 0.0;
+  }
 };
 
 }  // namespace global_planner

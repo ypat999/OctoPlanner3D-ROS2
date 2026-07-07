@@ -27,3 +27,24 @@
 
     # RViz2 Publish Point 工具的话题名
     clicked_point_topic: "clicked_point"
+
+    # ===== nav2 集成参数 =====
+    # 启用 nav2 集成模式：自动获取机器人位置作为起点，接收 /goal_pose 计算路径
+    enable_nav2_integration: true
+
+    # nav2 目标话题（带朝向的目标位姿）
+    goal_pose_topic: "/goal_pose"
+
+    # 机器人基座坐标系（用于 TF 查询获取当前位置）
+    robot_base_frame: "base_footprint"
+
+    # 定位坐标系（通常是 map 或 odom）
+    odom_frame: "odom"
+
+    # TF 查询超时时间（秒）
+    transform_timeout: 0.5
+
+    # 路径朝向计算模式
+    # "from_goal": 最后一个点的朝向使用 goal_pose 的朝向
+    # "interpolate": 所有点朝向根据路径方向插值计算
+    path_orientation_mode: "interpolate"

@@ -29,6 +29,9 @@ if(ament_cmake_FOUND)
   find_package(nav_msgs REQUIRED)
   find_package(std_msgs REQUIRED)
   find_package(visualization_msgs REQUIRED)
+  find_package(tf2 REQUIRED)
+  find_package(tf2_ros REQUIRED)
+  find_package(tf2_geometry_msgs REQUIRED)
 
   add_executable(octo_planner_rviz_node src/octo_planner_rviz_node.cpp)
   target_link_libraries(octo_planner_rviz_node GlobalPlanner Octomap)
@@ -39,6 +42,9 @@ if(ament_cmake_FOUND)
     nav_msgs
     std_msgs
     visualization_msgs
+    tf2
+    tf2_ros
+    tf2_geometry_msgs
   )
 
   install(TARGETS

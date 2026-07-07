@@ -24,6 +24,12 @@
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 
+// TF2 用于获取机器人位置
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
+
 namespace
 {
 
@@ -105,6 +111,13 @@ public:
     const int openmp_num_threads =
       declare_parameter<int>("openmp_num_threads", 0);
 
+    // nav2 集成参数
+    enable_nav2_integration_ = declare_parameter<bool>("enable_nav2_integration", false);
+    robot_base_frame_ = declare_parameter<std::string>("robot_base_frame", "base_footprint");
+    odom_frame_ = declare_parameter<std::string>("odom_frame", "odom");
+    transform_timeout_ = declare_parameter<double>("transform_timeout", 0.5);
+    path_orientation_mode_ = declare_parameter<std::string>("path_orientation_mode", "interpolate");
+
     converter_ = std::make_shared<pcd2octomap::Pcd2OctomapConverter>();
     converter_->setInputPcdFile(input_pcd);
     if (!output_bt.empty()) {
@@ -167,6 +180,14 @@ public:
       rclcpp::QoS(10),
       std::bind(&OctoPlannerRvizNode::onClickedPoint, this, std::placeholders::_1));
 
+    // 初始化 TF2（用于 nav2 集成获取机器人位置）
+    if (enable_nav2_integration_) {
+      tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
+      tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+      RCLCPP_INFO(get_logger(), "nav2 integration enabled. Will get robot position from TF (%s -> %s)",
+                  frame_id_.c_str(), robot_base_frame_.c_str());
+    }
+
     publishMap();
     if (map_publish_period > 0.0) {
       map_timer_ = create_wall_timer(
@@ -198,6 +219,9 @@ private:
 
   void onGoalPose(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
   {
+    // 保存目标朝向（用于路径朝向计算）
+    goal_orientation_ = msg->pose.orientation;
+
     goal_ = toPlannerPoint(msg->pose, goal_z_);
     has_goal_ = true;
     publishPoseMarker(goal_, "goal", 0, makeColor(0.95F, 0.25F, 0.15F, 1.0F), goal_marker_pub_);
@@ -207,6 +231,38 @@ private:
       goal_.x,
       goal_.y,
       goal_.z);
+
+    // nav2 集成模式：自动获取机器人当前位置作为起点
+    if (enable_nav2_integration_) {
+      try {
+        // 查询 TF: map -> base_footprint
+        geometry_msgs::msg::TransformStamped transform;
+        transform = tf_buffer_->lookupTransform(
+          frame_id_, robot_base_frame_,
+          tf2::TimePointZero);  // 获取最新的变换
+
+        start_.x = transform.transform.translation.x;
+        start_.y = transform.transform.translation.y;
+        start_.z = transform.transform.translation.z;
+        if (std::abs(start_.z) < kZeroZThreshold) {
+          start_.z = start_z_;  // 如果 z 值太小，使用默认值
+        }
+
+        has_start_ = true;
+        publishPoseMarker(start_, "start", 0, makeColor(0.1F, 0.9F, 0.2F, 1.0F), start_marker_pub_);
+        RCLCPP_INFO(
+          get_logger(),
+          "nav2 mode: Robot position from TF: [%.3f, %.3f, %.3f]",
+          start_.x,
+          start_.y,
+          start_.z);
+      } catch (const tf2::TransformException & ex) {
+        RCLCPP_WARN(get_logger(), "Failed to get robot position from TF: %s", ex.what());
+        // 如果 TF 失败，依然等待手动设置起点
+        has_start_ = false;
+      }
+    }
+
     planIfReady();
   }
 
@@ -513,11 +569,53 @@ private:
     msg.header.stamp = now();
     msg.poses.reserve(path.size());
 
-    for (const auto & point : path) {
+    // 计算路径朝向（MPPI 需要朝向信息）
+    for (size_t i = 0; i < path.size(); ++i) {
       geometry_msgs::msg::PoseStamped pose;
       pose.header = msg.header;
-      pose.pose.position = makePoint(point.x, point.y, point.z);
-      pose.pose.orientation.w = 1.0;
+      pose.pose.position = makePoint(path[i].x, path[i].y, path[i].z);
+
+      // 计算朝向
+      if (path_orientation_mode_ == "interpolate") {
+        // 模式 1: 根据路径方向插值计算所有点的朝向
+        if (i < path.size() - 1) {
+          // 计算当前点指向下一个点的朝向
+          double dx = path[i + 1].x - path[i].x;
+          double dy = path[i + 1].y - path[i].y;
+          double yaw = atan2(dy, dx);
+
+          // 转换为四元数
+          tf2::Quaternion q;
+          q.setRPY(0, 0, yaw);
+          pose.pose.orientation = tf2::toMsg(q);
+        } else if (i > 0) {
+          // 最后一个点使用前一个点的朝向
+          pose.pose.orientation = msg.poses[i - 1].pose.orientation;
+        } else {
+          // 单点路径：使用默认朝向
+          pose.pose.orientation.w = 1.0;
+        }
+      } else if (path_orientation_mode_ == "from_goal" && i == path.size() - 1) {
+        // 模式 2: 最后一个点使用 goal_pose 的朝向
+        pose.pose.orientation = goal_orientation_;
+        // 其他点根据路径方向插值
+        if (i > 0) {
+          for (size_t j = 0; j < path.size() - 1; ++j) {
+            if (j < path.size() - 1) {
+              double dx = path[j + 1].x - path[j].x;
+              double dy = path[j + 1].y - path[j].y;
+              double yaw = atan2(dy, dx);
+              tf2::Quaternion q;
+              q.setRPY(0, 0, yaw);
+              msg.poses[j].pose.orientation = tf2::toMsg(q);
+            }
+          }
+        }
+      } else {
+        // 默认: orientation.w = 1.0（旧版本兼容）
+        pose.pose.orientation.w = 1.0;
+      }
+
       msg.poses.push_back(pose);
     }
 
@@ -594,12 +692,24 @@ private:
   bool has_goal_ = false;
   bool next_clicked_point_is_start_ = true;
 
+  // nav2 集成相关成员变量
+  bool enable_nav2_integration_ = false;
+  std::string robot_base_frame_ = "base_footprint";
+  std::string odom_frame_ = "odom";
+  double transform_timeout_ = 0.5;
+  std::string path_orientation_mode_ = "interpolate";
+  geometry_msgs::msg::Quaternion goal_orientation_;  // 保存目标的朝向
+
   global_planner::PointPose start_;
   global_planner::PointPose goal_;
   std::shared_ptr<pcd2octomap::Pcd2OctomapConverter> converter_;
   std::shared_ptr<global_planner::GlobalPlanner> planner_;
   std::shared_ptr<octomap::OcTree> octree_;
   std::vector<CachedVoxel> cached_voxels_;
+
+  // TF2 用于获取机器人位置
+  std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr map_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_cloud_pub_;
