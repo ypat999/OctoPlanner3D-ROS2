@@ -1,13 +1,15 @@
 /**:
   ros__parameters:
     # 输入 PCD 点云文件路径
-    input_pcd: "/home/ywj/slam_data/3d_map/3dmap.pcd"
+    # 路径说明：通过global_config或launch参数指定，此处为默认值
+    # 实际运行时由 global_config.global_config.OCTOPLANNER_PCD_FILE_PATH 或 launch params_file 参数决定
+    input_pcd: "/home/ywj/slam_data/3d_map/3dmap.pcd"  # 默认路径，可被global_config覆盖
 
     # 输出 .bt 八叉树文件（不填则自动与 PCD 同名，e.g. 3dmap.pcd → 3dmap.bt）
     # output_bt: "result_cleaned.bt"
 
     # OctoMap 构建参数
-    resolution: 0.25            # 体素分辨率（米），建议与 PCD 降采样分辨率一致
+    resolution: 0.5            # 体素分辨率（米），建议与 PCD 降采样分辨率一致
     min_points_per_voxel: 1    # 每个体素至少需要的点数，已降采样的点云建议设为 1
     min_cluster_voxels: 1      # 最小连通聚类体素数，已降采样的点云建议设为 1
 
@@ -71,11 +73,11 @@
 
     # 地面支撑XY半径（栅格数），增加可支持斜坡
     # 减小此值可减少跨越小障碍物（如路沿、小草丛），保持更大的平坦区域
-    ground_support_xy_radius_cells: 0
+    ground_support_xy_radius_cells: 1
 
     # 地面支撑深度（栅格数），增加可支持跨楼梯
     # 减小此值可减少跨越台阶和楼梯，适合走平路场景
-    ground_support_depth_cells: 0
+    ground_support_depth_cells: 1
 
     # ===== 障碍物避让参数（高度约束）=====
     # 启用预阻塞代价图（根据 robot_radius 和预阻塞半径计算可通行性）
@@ -92,4 +94,4 @@
 
     # 只使用最低可通行层（关闭可支持跨楼层导航）
     # 开启此选项可避免路径绕行到较高的地方（如爬楼梯、平台），保持在最低的平坦层
-    lowest_traversable_only: true
+    lowest_traversable_only: false
