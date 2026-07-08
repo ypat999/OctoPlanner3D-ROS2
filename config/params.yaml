@@ -29,11 +29,10 @@
     clicked_point_topic: "clicked_point"
 
     # ===== nav2 集成参数 =====
-    # 启用 nav2 集成模式：自动获取机器人位置作为起点，接收 /goal_pose 计算路径
-    enable_nav2_integration: false
-
-    # nav2 目标话题（带朝向的目标位姿）
-    goal_pose_topic: "/goal_pose"
+    # 双模式架构：导航模式和测试模式独立运行
+    # - 导航模式：initialpose + goal_pose（Nav2执行，绿色路径）
+    # - 测试模式：clicked_point连续点击（仅供可视化，蓝色路径）
+    # - goal_pose到达时，若无起点自动从TF获取机器人位置
 
     # 机器人基座坐标系（用于 TF 查询获取当前位置）
     robot_base_frame: "base_footprint"
