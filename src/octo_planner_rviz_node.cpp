@@ -107,13 +107,12 @@ public:
     const int min_points_per_voxel = declare_parameter<int>("min_points_per_voxel", 2);
     const int min_cluster_voxels = declare_parameter<int>("min_cluster_voxels", 2);
     const double map_publish_period =
-      declare_parameter<double>("map_publish_period", 2.0);
+      declare_parameter<double>("map_publish_period", 0.0);
     const int openmp_num_threads =
       declare_parameter<int>("openmp_num_threads", 0);
 
     // nav2 集成参数（自动获取机器人位置作为起点）
     robot_base_frame_ = declare_parameter<std::string>("robot_base_frame", "base_footprint");
-    map_frame_ = declare_parameter<std::string>("map_frame", "map");
     transform_timeout_ = declare_parameter<double>("transform_timeout", 0.5);
     path_orientation_mode_ = declare_parameter<std::string>("path_orientation_mode", "interpolate");
 
@@ -271,33 +270,32 @@ private:
       nav_goal_.y,
       nav_goal_.z);
 
-    // 智能起点判断：只在缺少起点时自动从TF获取机器人位置
-    if (!has_nav_start_) {
-      try {
-        geometry_msgs::msg::TransformStamped transform;
-        transform = tf_buffer_->lookupTransform(
-          frame_id_, robot_base_frame_,
-          tf2::TimePointZero);
+    // 每次 goal_pose 从 TF 重新获取机器人当前位置作为起点
+    // 这样即使机器人移动了，新路径也从当前位置开始规划
+    try {
+      geometry_msgs::msg::TransformStamped transform;
+      transform = tf_buffer_->lookupTransform(
+        frame_id_, robot_base_frame_,
+        tf2::TimePointZero);
 
-        nav_start_.x = transform.transform.translation.x;
-        nav_start_.y = transform.transform.translation.y;
-        nav_start_.z = transform.transform.translation.z;
-        if (std::abs(nav_start_.z) < kZeroZThreshold) {
-          nav_start_.z = start_z_;
-        }
-
-        has_nav_start_ = true;
-        publishPoseMarker(nav_start_, "nav_start", 0, makeColor(0.1F, 0.9F, 0.2F, 1.0F), nav_start_marker_pub_);
-        RCLCPP_INFO(
-          get_logger(),
-          "[Nav Mode] Auto-start from robot TF: [%.3f, %.3f, %.3f]",
-          nav_start_.x,
-          nav_start_.y,
-          nav_start_.z);
-      } catch (const tf2::TransformException & ex) {
-        RCLCPP_WARN(get_logger(), "[Nav Mode] Failed to get robot position from TF: %s", ex.what());
-        has_nav_start_ = false;
+      nav_start_.x = transform.transform.translation.x;
+      nav_start_.y = transform.transform.translation.y;
+      nav_start_.z = transform.transform.translation.z;
+      if (std::abs(nav_start_.z) < kZeroZThreshold) {
+        nav_start_.z = start_z_;
       }
+
+      has_nav_start_ = true;
+      publishPoseMarker(nav_start_, "nav_start", 0, makeColor(0.1F, 0.9F, 0.2F, 1.0F), nav_start_marker_pub_);
+      RCLCPP_INFO(
+        get_logger(),
+        "[Nav Mode] Auto-start from robot TF: [%.3f, %.3f, %.3f]",
+        nav_start_.x,
+        nav_start_.y,
+        nav_start_.z);
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_WARN(get_logger(), "[Nav Mode] Failed to get robot position from TF: %s", ex.what());
+      has_nav_start_ = false;
     }
 
     planNavPath();
@@ -819,7 +817,6 @@ private:
 
   // Nav2集成相关参数（自动获取机器人位置）
   std::string robot_base_frame_ = "base_footprint";
-  std::string map_frame_ = "map";
   double transform_timeout_ = 0.5;
   std::string path_orientation_mode_ = "interpolate";
 

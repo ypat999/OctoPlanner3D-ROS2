@@ -21,8 +21,6 @@
     # 体素地图可视化参数
     map_alpha: 0.82           # 体素透明度 (0.05 ~ 1.0)
     map_color_mode: "height"  # 颜色模式: "height" 按高度着色
-    map_publish_period: 0.0   # 地图发布周期 (秒)，<=0 表示仅在启动时发布一次（transient_local 订阅者能收到）
-
     # 规划起点 / 终点默认 Z 值（当用户未指定 z 时回退）
     start_z: 0.3
     goal_z: 0.3
@@ -38,9 +36,6 @@
 
     # 机器人基座坐标系（用于 TF 查询获取当前位置）
     robot_base_frame: "base_footprint"
-
-    # 定位坐标系（基于三维 map 定位）
-    map_frame: "map"
 
     # TF 查询超时时间（秒）
     transform_timeout: 0.5
