@@ -27,7 +27,7 @@
 #include <nav2_msgs/action/compute_path_to_pose.hpp>
 #include <nav2_msgs/action/compute_path_through_poses.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
-#include <std_srvs/srv/empty.hpp>
+
 
 // TF2 用于获取机器人位置
 #include <tf2/LinearMath/Quaternion.h>
@@ -197,16 +197,6 @@ public:
       [](const std::shared_ptr<PathThroughGoalHandle>) { return rclcpp_action::CancelResponse::ACCEPT; },
       [this](const std::shared_ptr<PathThroughGoalHandle> h) { executeComputePathThroughPoses(h); });
     RCLCPP_INFO(get_logger(), "ComputePathThroughPoses action server ready");
-
-    // ===== 空白服务接口：兼容 Nav2 BT 中引用的 global_costmap 服务 =====
-    // 某些 BT（如 navigate_through_poses）在激活时会调用 global_costmap 的服务。
-    // 提供空实现，不执行任何操作。
-    clear_costmap_srv_ = create_service<std_srvs::srv::Empty>(
-      "global_costmap/clear_entirely_global_costmap",
-      [this](const std::shared_ptr<std_srvs::srv::Empty::Request>,
-             std::shared_ptr<std_srvs::srv::Empty::Response>) {
-        RCLCPP_DEBUG(get_logger(), "No-op: global_costmap clear (OctoPlanner manages its own map)");
-      });
 
     RCLCPP_INFO(get_logger(), "Building OctoMap from configured PCD file...");
     if (!converter_->convert()) {
@@ -1018,10 +1008,7 @@ private:
   // Nav2 ComputePathThroughPoses action server (满足 bt_navigator 启动依赖)
   rclcpp_action::Server<nav2_msgs::action::ComputePathThroughPoses>::SharedPtr action_through_poses_server_;
 
-  // 空白服务桩：global_costmap 服务接口（兼容 Nav2 BT）
-  rclcpp::Service<std_srvs::srv::Empty>::SharedPtr clear_costmap_srv_;
 
-  // 路径发布器（仅供可视化，不影响导航）
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr test_path_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr test_path_marker_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr test_start_marker_pub_;
