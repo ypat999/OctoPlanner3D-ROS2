@@ -1240,9 +1240,202 @@ namespace global_planner
     // publishRiskCostCloud();
 
 
+    // ============================================================================
+    // Path Smoothing Implementation
+    // ============================================================================
 
+    void GlobalPlanner::smoothPath()
+    {
+        if (!smoothing_enabled_ || planner_results_.size() < 3) {
+            return;
+        }
 
+        simplifyPath(planner_results_, smoothing_simplify_epsilon_);
+        if (planner_results_.size() < 2) return;
 
+        std::vector<PointPose> interp;
+        interpolatePath(planner_results_, interp, smoothing_interp_spacing_);
+        planner_results_ = std::move(interp);
 
+        gradientDescentSmooth(planner_results_, smoothing_gradient_iters_, smoothing_gradient_alpha_);
+    }
+
+    void GlobalPlanner::simplifyPath(std::vector<PointPose> & path, double epsilon) const
+    {
+        if (path.size() < 3) return;
+        const double eps_sq = epsilon * epsilon;
+
+        std::vector<PointPose> result;
+        result.reserve(path.size());
+        result.push_back(path.front());
+
+        for (size_t i = 1; i + 1 < path.size(); ++i) {
+            const auto & prev = result.back();
+            const auto & cur  = path[i];
+            const auto & next = path[i + 1];
+
+            const double dx = next.x - prev.x;
+            const double dy = next.y - prev.y;
+            const double dz = next.z - prev.z;
+            const double len_sq = dx * dx + dy * dy + dz * dz;
+            if (len_sq < 1e-12) {
+                continue;
+            }
+            const double t = ((cur.x - prev.x) * dx + (cur.y - prev.y) * dy + (cur.z - prev.z) * dz) / len_sq;
+            double dist_sq;
+            if (t <= 0.0) {
+                dist_sq = (cur.x - prev.x) * (cur.x - prev.x) +
+                          (cur.y - prev.y) * (cur.y - prev.y) +
+                          (cur.z - prev.z) * (cur.z - prev.z);
+            } else if (t >= 1.0) {
+                dist_sq = (cur.x - next.x) * (cur.x - next.x) +
+                          (cur.y - next.y) * (cur.y - next.y) +
+                          (cur.z - next.z) * (cur.z - next.z);
+            } else {
+                const double proj_x = prev.x + t * dx;
+                const double proj_y = prev.y + t * dy;
+                const double proj_z = prev.z + t * dz;
+                dist_sq = (cur.x - proj_x) * (cur.x - proj_x) +
+                          (cur.y - proj_y) * (cur.y - proj_y) +
+                          (cur.z - proj_z) * (cur.z - proj_z);
+            }
+
+            if (dist_sq > eps_sq) {
+                result.push_back(cur);
+            }
+        }
+        result.push_back(path.back());
+
+        if (result.size() < path.size()) {
+            path = std::move(result);
+        }
+    }
+
+    void GlobalPlanner::interpolatePath(
+        const std::vector<PointPose> & input,
+        std::vector<PointPose> & output,
+        double spacing) const
+    {
+        output.clear();
+        if (input.size() < 2) {
+            if (input.size() == 1) output = input;
+            return;
+        }
+
+        const double res = octree_ ? octree_->getResolution() : 0.5;
+        const double step = std::max(spacing, res * 0.1);
+
+        auto catmull_rom = [](const PointPose & p0, const PointPose & p1,
+                              const PointPose & p2, const PointPose & p3, double t) -> PointPose {
+            const double t2 = t * t;
+            const double t3 = t2 * t;
+            PointPose result;
+            result.x = 0.5 * ((2.0 * p1.x) +
+                              (-p0.x + p2.x) * t +
+                              (2.0 * p0.x - 5.0 * p1.x + 4.0 * p2.x - p3.x) * t2 +
+                              (-p0.x + 3.0 * p1.x - 3.0 * p2.x + p3.x) * t3);
+            result.y = 0.5 * ((2.0 * p1.y) +
+                              (-p0.y + p2.y) * t +
+                              (2.0 * p0.y - 5.0 * p1.y + 4.0 * p2.y - p3.y) * t2 +
+                              (-p0.y + 3.0 * p1.y - 3.0 * p2.y + p3.y) * t3);
+            result.z = 0.5 * ((2.0 * p1.z) +
+                              (-p0.z + p2.z) * t +
+                              (2.0 * p0.z - 5.0 * p1.z + 4.0 * p2.z - p3.z) * t2 +
+                              (-p0.z + 3.0 * p1.z - 3.0 * p2.z + p3.z) * t3);
+            return result;
+        };
+
+        output.reserve(static_cast<size_t>(input.size() * 3));
+        output.push_back(input.front());
+
+        for (size_t i = 0; i + 1 < input.size(); ++i) {
+            const auto & p0 = (i == 0) ? input[0] : input[i - 1];
+            const auto & p1 = input[i];
+            const auto & p2 = input[i + 1];
+            const auto & p3 = (i + 2 < input.size()) ? input[i + 2] : input[i + 1];
+
+            const double seg_len = std::sqrt(
+                (p2.x - p1.x) * (p2.x - p1.x) +
+                (p2.y - p1.y) * (p2.y - p1.y) +
+                (p2.z - p1.z) * (p2.z - p1.z));
+
+            const int num_steps = std::max(1, static_cast<int>(seg_len / step));
+            const double t_step = 1.0 / static_cast<double>(num_steps);
+
+            for (int j = 1; j <= num_steps; ++j) {
+                const double t = static_cast<double>(j) * t_step;
+                const PointPose pt = catmull_rom(p0, p1, p2, p3, t);
+                output.push_back(pt);
+            }
+        }
+    }
+
+    void GlobalPlanner::gradientDescentSmooth(
+        std::vector<PointPose> & path,
+        int max_iters,
+        double alpha) const
+    {
+        if (path.size() < 3) return;
+
+        const int search_radius = std::max(1, static_cast<int>(2.0 / octree_->getResolution()));
+
+        for (int iter = 0; iter < max_iters; ++iter) {
+            double max_delta = 0.0;
+
+            std::vector<PointPose> new_path = path;
+
+            for (size_t i = 1; i + 1 < path.size(); ++i) {
+                PointPose smooth_force;
+                smooth_force.x = (path[i - 1].x + path[i + 1].x) * 0.5 - path[i].x;
+                smooth_force.y = (path[i - 1].y + path[i + 1].y) * 0.5 - path[i].y;
+                smooth_force.z = (path[i - 1].z + path[i + 1].z) * 0.5 - path[i].z;
+
+                PointPose candidate;
+                candidate.x = path[i].x + alpha * smooth_force.x;
+                candidate.y = path[i].y + alpha * smooth_force.y;
+                candidate.z = path[i].z + alpha * smooth_force.z;
+
+                if (snapToTraversable(candidate, search_radius)) {
+                    new_path[i] = candidate;
+                    const double delta = std::sqrt(
+                        (candidate.x - path[i].x) * (candidate.x - path[i].x) +
+                        (candidate.y - path[i].y) * (candidate.y - path[i].y) +
+                        (candidate.z - path[i].z) * (candidate.z - path[i].z));
+                    if (delta > max_delta) max_delta = delta;
+                }
+            }
+
+            path = std::move(new_path);
+
+            if (max_delta < 1e-6) break;
+        }
+    }
+
+    bool GlobalPlanner::snapToTraversable(PointPose & pt, int search_radius_cells) const
+    {
+        const GridIndex seed = worldToGrid(pt.x, pt.y, pt.z);
+        if (isTraversableGrid(seed)) {
+            return true;
+        }
+
+        for (int r = 1; r <= search_radius_cells; ++r) {
+            for (int dx = -r; dx <= r; ++dx) {
+                for (int dy = -r; dy <= r; ++dy) {
+                    for (int dz = -r; dz <= r; ++dz) {
+                        if (std::abs(dx) != r && std::abs(dy) != r && std::abs(dz) != r) continue;
+                        const GridIndex n{seed.x + dx, seed.y + dy, seed.z + dz};
+                        if (isTraversableGrid(n)) {
+                            const auto wp = gridToWorld(n);
+                            pt.x = wp.x();
+                            pt.y = wp.y();
+                            pt.z = wp.z();
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    }
 
 }

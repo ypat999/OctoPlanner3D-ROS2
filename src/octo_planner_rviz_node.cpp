@@ -115,6 +115,7 @@ public:
     robot_base_frame_ = declare_parameter<std::string>("robot_base_frame", "base_footprint");
     transform_timeout_ = declare_parameter<double>("transform_timeout", 0.5);
     path_orientation_mode_ = declare_parameter<std::string>("path_orientation_mode", "interpolate");
+    planned_path_topic_ = declare_parameter<std::string>("planned_path_topic", "planned_path");
 
     // 规划参数（与机器人尺寸和导航行为相关）
     const double robot_radius = declare_parameter<double>("robot_radius", 0.25);
@@ -128,6 +129,17 @@ public:
     const int preblocked_costmap_radius_cells = declare_parameter<int>("preblocked_costmap_radius_cells", 3);
     const double preblocked_costmap_weight = declare_parameter<double>("preblocked_costmap_weight", 2.5);
     const bool lowest_traversable_only = declare_parameter<bool>("lowest_traversable_only", false);
+
+    // 平滑参数
+    const bool smoothing_enabled = declare_parameter<bool>("smoothing_enabled", true);
+    const double smoothing_simplify_epsilon =
+      declare_parameter<double>("smoothing_simplify_epsilon", 0.1);
+    const double smoothing_interp_spacing =
+      declare_parameter<double>("smoothing_interp_spacing", 0.15);
+    const int smoothing_gradient_iterations =
+      declare_parameter<int>("smoothing_gradient_iterations", 50);
+    const double smoothing_gradient_alpha =
+      declare_parameter<double>("smoothing_gradient_alpha", 0.3);
 
     converter_ = std::make_shared<pcd2octomap::Pcd2OctomapConverter>();
     converter_->setInputPcdFile(input_pcd);
@@ -152,6 +164,13 @@ public:
     planner_->setPreblockedCostmapRadiusCells(preblocked_costmap_radius_cells);
     planner_->setPreblockedCostmapWeight(preblocked_costmap_weight);
     planner_->setLowestTraversableOnly(lowest_traversable_only);
+
+    // 设置平滑参数
+    planner_->setSmoothingEnabled(smoothing_enabled);
+    planner_->setSmoothingSimplifyEpsilon(smoothing_simplify_epsilon);
+    planner_->setSmoothingInterpSpacing(smoothing_interp_spacing);
+    planner_->setSmoothingGradientIterations(smoothing_gradient_iterations);
+    planner_->setSmoothingGradientAlpha(smoothing_gradient_alpha);
 
     RCLCPP_INFO(get_logger(), "Building OctoMap from configured PCD file...");
     if (!converter_->convert()) {
@@ -187,7 +206,7 @@ public:
       create_publisher<sensor_msgs::msg::PointCloud2>("occupied_map_cloud", transient_qos);
 
     // 导航路径发布器（用于Nav2执行）
-    path_pub_ = create_publisher<nav_msgs::msg::Path>("planned_path", transient_qos);
+    path_pub_ = create_publisher<nav_msgs::msg::Path>(planned_path_topic_, transient_qos);
     path_marker_pub_ =
       create_publisher<visualization_msgs::msg::Marker>("planned_path_marker", transient_qos);
     nav_start_marker_pub_ =
@@ -445,6 +464,8 @@ private:
     const double plan_elapsed =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
 
+    planner_->smoothPath();
+
     std::vector<global_planner::PointPose> path;
     planner_->getPlannerResults(path);
     if (path.empty()) {
@@ -454,7 +475,8 @@ private:
     }
 
     publishNavPath(path);
-    RCLCPP_INFO(get_logger(), "[Nav Mode] Published nav path with %zu poses (%.2f s).", path.size(), plan_elapsed);
+    RCLCPP_INFO(get_logger(), "[Nav Mode] Published nav path with %zu poses (%.2f s).",
+                path.size(), plan_elapsed);
   }
 
   // ===== 测试路径规划 =====
@@ -819,6 +841,7 @@ private:
   std::string robot_base_frame_ = "base_footprint";
   double transform_timeout_ = 0.5;
   std::string path_orientation_mode_ = "interpolate";
+  std::string planned_path_topic_ = "planned_path";
 
   // OctoMap和规划器
   std::shared_ptr<pcd2octomap::Pcd2OctomapConverter> converter_;

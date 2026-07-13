@@ -101,6 +101,16 @@ public:
   void setPreblockedCostmapWeight(double weight) { preblocked_costmap_weight_ = weight; }
   void setLowestTraversableOnly(bool enable) { lowest_traversable_only_ = enable; }
 
+  // ===== 路径平滑参数 =====
+  void setSmoothingEnabled(bool enable) { smoothing_enabled_ = enable; }
+  void setSmoothingSimplifyEpsilon(double eps) { smoothing_simplify_epsilon_ = eps; }
+  void setSmoothingInterpSpacing(double spacing) { smoothing_interp_spacing_ = spacing; }
+  void setSmoothingGradientIterations(int iters) { smoothing_gradient_iters_ = iters; }
+  void setSmoothingGradientAlpha(double alpha) { smoothing_gradient_alpha_ = alpha; }
+
+  /** 对规划结果执行路径平滑 */
+  void smoothPath();
+
   void makePlan(const PointPose start,const PointPose goal);
 
   void getPlannerResults(std::vector<PointPose>& plannerResults);
@@ -187,6 +197,16 @@ private:
     const std::unordered_map<GridIndex, GridIndex, GridIndexHash> & came_from,
     GridIndex current) const;
 
+  // ===== 路径平滑实现 =====
+  /** 简化路径：去除共线/近似共线的冗余点 */
+  void simplifyPath(std::vector<PointPose> & path, double epsilon) const;
+  /** Catmull-Rom 样条插值：在路径点之间生成高密度平滑点 */
+  void interpolatePath(const std::vector<PointPose> & input, std::vector<PointPose> & output, double spacing) const;
+  /** 梯度下降平滑：迭代优化路径点位置，最小化曲率同时保持可通行 */
+  void gradientDescentSmooth(std::vector<PointPose> & path, int max_iters, double alpha) const;
+  /** 检查路径点是否可通行，若不可通行则吸附到最近可通行点 */
+  bool snapToTraversable(PointPose & pt, int search_radius_cells) const;
+
   bool startPlan();
 
   void publishPath(
@@ -217,6 +237,13 @@ private:
   int preblocked_costmap_radius_cells_ = 3;
   double preblocked_costmap_weight_ = 2.5;
   bool lowest_traversable_only_ = false;
+
+  // ===== 平滑参数 =====
+  bool smoothing_enabled_ = true;
+  double smoothing_simplify_epsilon_ = 0.1;      // 简化容忍度（米）
+  double smoothing_interp_spacing_ = 0.15;        // 插值点间距（米）
+  int smoothing_gradient_iters_ = 50;             // 梯度下降迭代次数
+  double smoothing_gradient_alpha_ = 0.3;         // 梯度下降步长
 
   bool map_ready_ = false;
   bool has_start_ = false;

@@ -45,6 +45,9 @@
     # "interpolate": 所有点朝向根据路径方向插值计算
     path_orientation_mode: "interpolate"
 
+    # 导航路径发布话题名（Nav2 默认监听 /plan）
+    planned_path_topic: "plan"
+
     # ===== 规划参数（与机器人尺寸和导航行为相关）=====
     # 机器人半径（米），影响障碍物避让和宽度约束
     # 典型值：小型 0.20（宽0.4米），中型 0.30（宽0.6米），大型 0.50（宽1.0米）
@@ -90,3 +93,15 @@
     # 只使用最低可通行层（关闭可支持跨楼层导航）
     # 开启此选项可避免路径绕行到较高的地方（如爬楼梯、平台），保持在最低的平坦层
     lowest_traversable_only: false
+
+    # ===== 路径平滑参数 =====
+    # 是否启用路径平滑（简化 -> 样条插值 -> 梯度下降）
+    smoothing_enabled: true
+    # 路径简化容忍度（米），去除到线段距离小于此值的冗余点
+    smoothing_simplify_epsilon: 0.1
+    # 插值点间距（米），越小路径越密集平滑
+    smoothing_interp_spacing: 0.15
+    # 梯度下降迭代次数，越大路径越平滑但耗时越长
+    smoothing_gradient_iterations: 50
+    # 梯度下降步长，越大收敛越快但可能跳过障碍
+    smoothing_gradient_alpha: 0.3
