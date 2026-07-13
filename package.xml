@@ -20,6 +20,12 @@
   <depend>nav2_msgs</depend>
   <depend>rclcpp_action</depend>
 
+  <depend>nav2_core</depend>
+  <depend>nav2_costmap_2d</depend>
+  <depend>nav2_util</depend>
+  <depend>pluginlib</depend>
+  <depend>rclcpp_lifecycle</depend>
+
   <exec_depend>ros2launch</exec_depend>
 
   <export>

@@ -9,7 +9,6 @@
 #include <functional>
 #include <memory>
 #include <string>
-#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -31,13 +30,8 @@
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 
-#include <nav2_msgs/action/compute_path_to_pose.hpp>
-#include <rclcpp_action/rclcpp_action.hpp>
-
 namespace
 {
-
-using ComputePathToPose = nav2_msgs::action::ComputePathToPose;
 
 constexpr double kZeroZThreshold = 1.0e-6;
 
@@ -242,14 +236,6 @@ public:
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
     RCLCPP_INFO(get_logger(), "TF2 initialized.");
 
-    // Nav2 ComputePathToPose Action Server
-    compute_path_action_server_ = rclcpp_action::create_server<nav2_msgs::action::ComputePathToPose>(
-      this,
-      "compute_path_to_pose",
-      std::bind(&OctoPlannerRvizNode::handleActionGoal, this, std::placeholders::_1, std::placeholders::_2),
-      std::bind(&OctoPlannerRvizNode::handleActionCancel, this, std::placeholders::_1),
-      std::bind(&OctoPlannerRvizNode::handleActionAccepted, this, std::placeholders::_1));
-
     publishMap();
     if (map_publish_period > 0.0) {
       map_timer_ = create_wall_timer(
@@ -408,122 +394,6 @@ private:
     if (!f) {
       cached_voxels_.clear();
     }
-  }
-
-  // ===== Nav2 ComputePathToPose Action Server =====
-  rclcpp_action::GoalResponse handleActionGoal(
-    const rclcpp_action::GoalUUID &,
-    std::shared_ptr<const ComputePathToPose::Goal>)
-  {
-    return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
-  }
-
-  rclcpp_action::CancelResponse handleActionCancel(
-    const std::shared_ptr<rclcpp_action::ServerGoalHandle<ComputePathToPose>>)
-  {
-    return rclcpp_action::CancelResponse::ACCEPT;
-  }
-
-  void handleActionAccepted(
-    const std::shared_ptr<rclcpp_action::ServerGoalHandle<ComputePathToPose>> goal_handle)
-  {
-    // 在新线程中执行，不阻塞 action server
-    std::thread{[this, goal_handle]() { executeComputePath(goal_handle); }}.detach();
-  }
-
-  void executeComputePath(
-    const std::shared_ptr<rclcpp_action::ServerGoalHandle<ComputePathToPose>> goal_handle)
-  {
-    if (!planner_ || !octree_) {
-      RCLCPP_ERROR(get_logger(), "[Action] Planner or OctoMap not ready.");
-      auto result = std::make_shared<ComputePathToPose::Result>();
-      goal_handle->abort(result);
-      return;
-    }
-
-    const auto & goal = goal_handle->get_goal();
-    RCLCPP_INFO(get_logger(), "[Action] ComputePathToPose: planning to [%.3f, %.3f]",
-                goal->goal.pose.position.x, goal->goal.pose.position.y);
-
-    // 从 TF 获取机器人当前位置作为起点
-    geometry_msgs::msg::TransformStamped transform;
-    try {
-      transform = tf_buffer_->lookupTransform(
-        frame_id_, robot_base_frame_, tf2::TimePointZero);
-    } catch (const tf2::TransformException & ex) {
-      RCLCPP_ERROR(get_logger(), "[Action] Failed to get robot pose from TF: %s", ex.what());
-      auto result = std::make_shared<ComputePathToPose::Result>();
-      goal_handle->abort(result);
-      return;
-    }
-
-    nav_start_.x = transform.transform.translation.x;
-    nav_start_.y = transform.transform.translation.y;
-    nav_start_.z = transform.transform.translation.z;
-    nav_goal_.x = goal->goal.pose.position.x;
-    nav_goal_.y = goal->goal.pose.position.y;
-    nav_goal_.z = goal->goal.pose.position.z;
-    nav_goal_orientation_ = goal->goal.pose.orientation;
-
-    const auto t_start = std::chrono::steady_clock::now();
-    planner_->makePlan(nav_start_, nav_goal_);
-    double plan_elapsed =
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
-
-    planner_->smoothPath();
-
-    std::vector<global_planner::PointPose> path;
-    planner_->getPlannerResults(path);
-
-    plan_elapsed =
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
-
-    if (path.empty()) {
-      RCLCPP_WARN(get_logger(), "[Action] Planner returned empty path (%.2f s).", plan_elapsed);
-      auto result = std::make_shared<ComputePathToPose::Result>();
-      goal_handle->abort(result);
-      return;
-    }
-
-    // 构建 Path 消息（复用 publishNavPath 的朝向逻辑）
-    nav_msgs::msg::Path path_msg;
-    path_msg.header.frame_id = frame_id_;
-    path_msg.header.stamp = now();
-    path_msg.poses.reserve(path.size());
-
-    for (size_t i = 0; i < path.size(); ++i) {
-      geometry_msgs::msg::PoseStamped pose;
-      pose.header = path_msg.header;
-      pose.pose.position = makePoint(path[i].x, path[i].y, path[i].z);
-      if (path_orientation_mode_ == "interpolate") {
-        if (i < path.size() - 1) {
-          double dx = path[i + 1].x - path[i].x;
-          double dy = path[i + 1].y - path[i].y;
-          double yaw = atan2(dy, dx);
-          tf2::Quaternion q;
-          q.setRPY(0, 0, yaw);
-          pose.pose.orientation = tf2::toMsg(q);
-        } else if (i > 0) {
-          pose.pose.orientation = path_msg.poses[i - 1].pose.orientation;
-        } else {
-          pose.pose.orientation.w = 1.0;
-        }
-      } else {
-        pose.pose.orientation.w = 1.0;
-      }
-      path_msg.poses.push_back(pose);
-    }
-
-    // 也发布到 topic 用于可视化
-    path_pub_->publish(path_msg);
-    publishNavPathMarker(path);
-
-    auto result = std::make_shared<ComputePathToPose::Result>();
-    result->path = path_msg;
-    goal_handle->succeed(result);
-
-    RCLCPP_INFO(get_logger(), "[Action] Path computed: %zu poses (%.2f s).",
-                path.size(), plan_elapsed);
   }
 
   // ===== 导航路径规划 =====
@@ -948,8 +818,7 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr start_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr clicked_point_sub_;
 
-  // Nav2 ComputePathToPose Action Server
-  rclcpp_action::Server<ComputePathToPose>::SharedPtr compute_path_action_server_;
+  
 
   rclcpp::TimerBase::SharedPtr map_timer_;
 };

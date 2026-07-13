@@ -98,7 +98,7 @@
     # 是否启用路径平滑（简化 -> 样条插值 -> 梯度下降）
     smoothing_enabled: true
     # 路径简化容忍度（米），去除到线段距离小于此值的冗余点
-    smoothing_simplify_epsilon: 0.1
+    smoothing_simplify_epsilon: 0.5
     # 插值点间距（米），越小路径越密集平滑
     smoothing_interp_spacing: 0.15
     # 梯度下降迭代次数，越大路径越平滑但耗时越长
