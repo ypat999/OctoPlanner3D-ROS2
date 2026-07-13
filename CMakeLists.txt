@@ -45,8 +45,10 @@ if(ament_cmake_FOUND)
   ament_target_dependencies(
     octo_planner_rviz_node
     rclcpp
+    rclcpp_action
     geometry_msgs
     nav_msgs
+    nav2_msgs
     std_msgs
     visualization_msgs
     tf2

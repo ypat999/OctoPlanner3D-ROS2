@@ -24,6 +24,9 @@
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 
+#include <nav2_msgs/action/compute_path_to_pose.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
+
 // TF2 用于获取机器人位置
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
@@ -115,7 +118,7 @@ public:
     robot_base_frame_ = declare_parameter<std::string>("robot_base_frame", "base_footprint");
     transform_timeout_ = declare_parameter<double>("transform_timeout", 0.5);
     path_orientation_mode_ = declare_parameter<std::string>("path_orientation_mode", "interpolate");
-    planned_path_topic_ = declare_parameter<std::string>("planned_path_topic", "planned_path");
+    planned_path_topic_ = declare_parameter<std::string>("planned_path_topic", "plan");
 
     // 规划参数（与机器人尺寸和导航行为相关）
     const double robot_radius = declare_parameter<double>("robot_radius", 0.25);
@@ -231,6 +234,30 @@ public:
       rclcpp::QoS(10),
       std::bind(&OctoPlannerRvizNode::onTestClickedPoint, this, std::placeholders::_1));
 
+    // ===== Action Server: Nav2 标准 ComputePathToPose 接口 =====
+    // bt_navigator 的 ComputePathToPose BT node 直接连接此 action，
+    // 节点内部使用同一个 OctoMap 和 planner 实例，保证与 test mode 一致。
+    using nav2_msgs::action::ComputePathToPose;
+    using GoalHandle = rclcpp_action::ServerGoalHandle<ComputePathToPose>;
+
+    action_server_ = rclcpp_action::create_server<ComputePathToPose>(
+      this,
+      "compute_path_to_pose",
+      // handle_goal: accept all goals
+      [this](const rclcpp_action::GoalUUID &,
+             std::shared_ptr<const ComputePathToPose::Goal>) {
+        return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+      },
+      // handle_cancel: accept all cancels
+      [this](const std::shared_ptr<GoalHandle>) {
+        return rclcpp_action::CancelResponse::ACCEPT;
+      },
+      // handle_accepted: execute planning
+      [this](const std::shared_ptr<GoalHandle> handle) {
+        executeComputePathToPose(handle);
+      });
+    RCLCPP_INFO(get_logger(), "ComputePathToPose action server ready");
+
     // 初始化 TF2（用于自动获取机器人位置）
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -259,11 +286,11 @@ private:
     publishPoseMarker(nav_start_, "nav_start", 0, makeColor(0.1F, 0.9F, 0.2F, 1.0F), nav_start_marker_pub_);
     RCLCPP_INFO(
       get_logger(),
-      "[Nav Mode] Start set to [%.3f, %.3f, %.3f]",
+      "[Nav Mode] Start set to [%.3f, %.3f, %.3f] (planning via ComputePathToPose action)",
       nav_start_.x,
       nav_start_.y,
       nav_start_.z);
-    planNavPath();
+    // 不再调用 planNavPath()：导航规划由 ComputePathToPose action server 统一处理
   }
 
   // ===== 测试模式回调 =====
@@ -449,6 +476,98 @@ private:
 
     publishTestPath(path);
     RCLCPP_INFO(get_logger(), "[Test Mode] Published test path with %zu poses (%.2f s).", path.size(), plan_elapsed);
+  }
+
+  // ===== 从 TF 获取机器人当前位姿 =====
+  bool getRobotPose(global_planner::PointPose & pose)
+  {
+    geometry_msgs::msg::TransformStamped t;
+    try {
+      t = tf_buffer_->lookupTransform(frame_id_, robot_base_frame_, tf2::TimePointZero);
+    } catch (const tf2::TransformException & e) {
+      RCLCPP_ERROR(get_logger(), "TF lookup(%s->%s) failed: %s",
+                   frame_id_.c_str(), robot_base_frame_.c_str(), e.what());
+      return false;
+    }
+    pose.x = t.transform.translation.x;
+    pose.y = t.transform.translation.y;
+    pose.z = t.transform.translation.z;
+    return true;
+  }
+
+  // ===== Nav2 ComputePathToPose action 处理 =====
+  void executeComputePathToPose(
+    const std::shared_ptr<rclcpp_action::ServerGoalHandle<nav2_msgs::action::ComputePathToPose>> handle)
+  {
+    const auto goal = handle->get_goal();
+
+    auto result = std::make_shared<nav2_msgs::action::ComputePathToPose::Result>();
+    result->path.header.frame_id = frame_id_;
+    result->path.header.stamp = now();
+
+    if (!planner_ || !octree_) {
+      RCLCPP_ERROR(get_logger(), "Planner/OctoMap not ready");
+      handle->abort(result);
+      return;
+    }
+
+    // start from TF, goal from action request
+    global_planner::PointPose sp;
+    if (!getRobotPose(sp)) {
+      handle->abort(result);
+      return;
+    }
+
+    global_planner::PointPose gp;
+    gp.x = goal->goal.pose.position.x;
+    gp.y = goal->goal.pose.position.y;
+    gp.z = goal->goal.pose.position.z + goal_z_;
+
+    RCLCPP_INFO(get_logger(), "[Nav2 Action] Planning [%.2f,%.2f,%.2f] -> [%.2f,%.2f,%.2f]",
+                sp.x, sp.y, sp.z, gp.x, gp.y, gp.z);
+
+    const auto t0 = std::chrono::steady_clock::now();
+    planner_->makePlan(sp, gp);
+    planner_->smoothPath();
+
+    std::vector<global_planner::PointPose> raw;
+    planner_->getPlannerResults(raw);
+    const double elapsed =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+
+    if (raw.empty()) {
+      RCLCPP_WARN(get_logger(), "[Nav2 Action] Empty path (%.2f s)", elapsed);
+      handle->abort(result);
+      return;
+    }
+
+    // build nav_msgs::Path with orientation interpolation
+    result->path.poses.reserve(raw.size());
+    for (size_t i = 0; i < raw.size(); ++i) {
+      geometry_msgs::msg::PoseStamped pose;
+      pose.header = result->path.header;
+      pose.pose.position.x = raw[i].x;
+      pose.pose.position.y = raw[i].y;
+      pose.pose.position.z = raw[i].z;
+      if (i < raw.size() - 1) {
+        double yaw = std::atan2(raw[i + 1].y - raw[i].y, raw[i + 1].x - raw[i].x);
+        tf2::Quaternion q;
+        q.setRPY(0, 0, yaw);
+        pose.pose.orientation = tf2::toMsg(q);
+      } else if (i > 0) {
+        pose.pose.orientation = result->path.poses[i - 1].pose.orientation;
+      } else {
+        pose.pose.orientation.w = 1.0;
+      }
+      result->path.poses.push_back(pose);
+    }
+
+    // publish to /plan for RViz
+    nav_msgs::msg::Path viz_path = result->path;
+    path_pub_->publish(viz_path);
+
+    handle->succeed(result);
+    RCLCPP_INFO(get_logger(), "[Nav2 Action] Planned %zu poses in %.2f s", raw.size(), elapsed);
   }
 
   void publishMap()
@@ -803,6 +922,9 @@ private:
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr path_marker_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr nav_start_marker_pub_;
+
+  // Nav2 ComputePathToPose action server
+  rclcpp_action::Server<nav2_msgs::action::ComputePathToPose>::SharedPtr action_server_;
 
   // 路径发布器（仅供可视化，不影响导航）
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr test_path_pub_;

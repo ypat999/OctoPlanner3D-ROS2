@@ -14,6 +14,7 @@
 #include "nav2_core/global_planner.hpp"
 #include "nav2_costmap_2d/costmap_2d_ros.hpp"
 #include "nav2_util/lifecycle_node.hpp"
+#include "octomap_msgs/msg/octomap.hpp"
 #include "rclcpp/rclcpp.hpp"
 
 #include "global_planner.h"
@@ -44,11 +45,14 @@ public:
 private:
   rclcpp::Logger logger_{rclcpp::get_logger("OctoPlannerGlobalPlanner")};
 
+  rclcpp_lifecycle::LifecycleNode::SharedPtr node_;
   std::shared_ptr<global_planner::GlobalPlanner> planner_;
   std::shared_ptr<octomap::OcTree> octree_;
 
-  // z-fallback: when goal/start z ≈ 0 (typical for RViz 2D Nav Goal),
-  // substitute with these configured values.
+  // Publisher to broadcast the built OctoMap so other nodes (e.g. rviz node)
+  // can reuse it without loading the PCD again.
+  rclcpp::Publisher<octomap_msgs::msg::Octomap>::SharedPtr octomap_pub_;
+
   double start_z_{0.3};
   double goal_z_{0.3};
 

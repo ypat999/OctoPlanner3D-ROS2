@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "pcd2octomap_converter.h"
+#include "octomap_msgs/conversions.h"
 #include "pluginlib/class_list_macros.hpp"
 
 namespace octo_planner3d
@@ -34,6 +35,7 @@ void OctoPlannerGlobalPlanner::configure(
     RCLCPP_ERROR(logger_, "Parent lifecycle node expired");
     return;
   }
+  node_ = node;  // keep for later use (e.g. OctoMap broadcast)
 
   logger_ = node->get_logger();
 
@@ -136,6 +138,22 @@ void OctoPlannerGlobalPlanner::configure(
   const std::string cache_path =
     (output_bt.empty() ? input_pcd : output_bt) + "_planning_cache";
   planner_->setOctomapWithCache(octree_, cache_path);
+
+  // ---- broadcast OctoMap so viz node can reuse it (no duplicate PCD loading) ----
+  {
+    auto msg = std::make_unique<octomap_msgs::msg::Octomap>();
+    msg->header.frame_id = "map";
+    msg->binary = true;
+    msg->id = "OctoMap";
+    msg->resolution = resolution;
+    octomap_msgs::fullMapToMsg(*octree_, *msg);
+    const auto data_size = msg->data.size();
+
+    const auto qos = rclcpp::QoS(1).transient_local().reliable();
+    octomap_pub_ = node_->create_publisher<octomap_msgs::msg::Octomap>("~/octomap", qos);
+    octomap_pub_->publish(std::move(msg));
+    RCLCPP_INFO(logger_, "OctoMap broadcasted on ~/octomap (%zu bytes)", data_size);
+  }
 
   is_configured_ = true;
   RCLCPP_INFO(logger_, "OctoPlannerGlobalPlanner configured successfully");
