@@ -172,15 +172,13 @@ nav_msgs::msg::Path OctoPlannerGlobalPlanner::createPlan(
     return plan;
   }
 
-  constexpr double kEps = 1e-6;
-
   global_planner::PointPose sp, gp;
   sp.x = start.pose.position.x;
   sp.y = start.pose.position.y;
-  sp.z = std::abs(start.pose.position.z) > kEps ? start.pose.position.z : start_z_;
+  sp.z = start.pose.position.z + start_z_;
   gp.x = goal.pose.position.x;
   gp.y = goal.pose.position.y;
-  gp.z = std::abs(goal.pose.position.z) > kEps ? goal.pose.position.z : goal_z_;
+  gp.z = goal.pose.position.z + goal_z_;
 
   RCLCPP_INFO(logger_, "Planning [%.2f,%.2f,%.2f] -> [%.2f,%.2f,%.2f]",
               sp.x, sp.y, sp.z, gp.x, gp.y, gp.z);
