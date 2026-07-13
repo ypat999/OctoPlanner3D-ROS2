@@ -50,6 +50,7 @@ if(ament_cmake_FOUND)
     nav_msgs
     nav2_msgs
     std_msgs
+    std_srvs
     visualization_msgs
     tf2
     tf2_ros
