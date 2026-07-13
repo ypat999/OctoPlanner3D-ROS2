@@ -1325,24 +1325,47 @@ namespace global_planner
         const double res = octree_ ? octree_->getResolution() : 0.5;
         const double step = std::max(spacing, res * 0.1);
 
-        auto catmull_rom = [](const PointPose & p0, const PointPose & p1,
-                              const PointPose & p2, const PointPose & p3, double t) -> PointPose {
-            const double t2 = t * t;
-            const double t3 = t2 * t;
-            PointPose result;
-            result.x = 0.5 * ((2.0 * p1.x) +
-                              (-p0.x + p2.x) * t +
-                              (2.0 * p0.x - 5.0 * p1.x + 4.0 * p2.x - p3.x) * t2 +
-                              (-p0.x + 3.0 * p1.x - 3.0 * p2.x + p3.x) * t3);
-            result.y = 0.5 * ((2.0 * p1.y) +
-                              (-p0.y + p2.y) * t +
-                              (2.0 * p0.y - 5.0 * p1.y + 4.0 * p2.y - p3.y) * t2 +
-                              (-p0.y + 3.0 * p1.y - 3.0 * p2.y + p3.y) * t3);
-            result.z = 0.5 * ((2.0 * p1.z) +
-                              (-p0.z + p2.z) * t +
-                              (2.0 * p0.z - 5.0 * p1.z + 4.0 * p2.z - p3.z) * t2 +
-                              (-p0.z + 3.0 * p1.z - 3.0 * p2.z + p3.z) * t3);
-            return result;
+        // 辅助：两点间距离
+        auto chord_len = [](const PointPose & a, const PointPose & b) -> double {
+            const double dx = a.x - b.x;
+            const double dy = a.y - b.y;
+            const double dz = a.z - b.z;
+            return std::sqrt(dx * dx + dy * dy + dz * dz);
+        };
+
+        // 辅助：centripetal Catmull-Rom 插值（alpha=0.5，减少 overshoot）
+        // 使用 Barry-Goldman 递归求值，支持非均匀参数化
+        auto centripetal_catmull_rom = [&chord_len](
+            const PointPose & p0, const PointPose & p1,
+            const PointPose & p2, const PointPose & p3, double t) -> PointPose {
+            const double alpha = 0.5; // centripetal
+            double t0 = 0.0;
+            double t1 = t0 + std::pow(chord_len(p0, p1), alpha);
+            double t2 = t1 + std::pow(chord_len(p1, p2), alpha);
+            double t3 = t2 + std::pow(chord_len(p2, p3), alpha);
+            // 避免除零
+            if (t2 - t1 < 1e-12) {
+                return p1;
+            }
+            const double u = t1 + (t2 - t1) * t; // 映射到 [t1, t2]
+
+            auto lerp = [](const PointPose & a, const PointPose & b,
+                           double ta, double tb, double t_cur) -> PointPose {
+                if (std::abs(tb - ta) < 1e-12) return a;
+                const double w = (t_cur - ta) / (tb - ta);
+                PointPose r;
+                r.x = a.x + (b.x - a.x) * w;
+                r.y = a.y + (b.y - a.y) * w;
+                r.z = a.z + (b.z - a.z) * w;
+                return r;
+            };
+
+            const PointPose A1 = lerp(p0, p1, t0, t1, u);
+            const PointPose A2 = lerp(p1, p2, t1, t2, u);
+            const PointPose A3 = lerp(p2, p3, t2, t3, u);
+            const PointPose B1 = lerp(A1, A2, t0, t2, u);
+            const PointPose B2 = lerp(A2, A3, t1, t3, u);
+            return lerp(B1, B2, t1, t2, u);
         };
 
         output.reserve(static_cast<size_t>(input.size() * 3));
@@ -1354,17 +1377,13 @@ namespace global_planner
             const auto & p2 = input[i + 1];
             const auto & p3 = (i + 2 < input.size()) ? input[i + 2] : input[i + 1];
 
-            const double seg_len = std::sqrt(
-                (p2.x - p1.x) * (p2.x - p1.x) +
-                (p2.y - p1.y) * (p2.y - p1.y) +
-                (p2.z - p1.z) * (p2.z - p1.z));
-
+            const double seg_len = chord_len(p1, p2);
             const int num_steps = std::max(1, static_cast<int>(seg_len / step));
             const double t_step = 1.0 / static_cast<double>(num_steps);
 
             for (int j = 1; j <= num_steps; ++j) {
                 const double t = static_cast<double>(j) * t_step;
-                const PointPose pt = catmull_rom(p0, p1, p2, p3, t);
+                const PointPose pt = centripetal_catmull_rom(p0, p1, p2, p3, t);
                 output.push_back(pt);
             }
         }
@@ -1377,9 +1396,14 @@ namespace global_planner
     {
         if (path.size() < 3) return;
 
-        const int search_radius = std::max(1, static_cast<int>(2.0 / octree_->getResolution()));
+        const double res = octree_ ? octree_->getResolution() : 0.5;
+        const int search_radius = std::max(1, static_cast<int>(2.0 / res));
+        // 每步位移上限 = 半栅格，防止拐弯处大幅震荡
+        const double max_step = res * 0.5;
 
         for (int iter = 0; iter < max_iters; ++iter) {
+            // 迭代衰减：后期仅微调，有效抑制震荡
+            const double alpha_eff = alpha * (1.0 - static_cast<double>(iter) / max_iters);
             double max_delta = 0.0;
 
             std::vector<PointPose> new_path = path;
@@ -1391,17 +1415,25 @@ namespace global_planner
                 smooth_force.z = (path[i - 1].z + path[i + 1].z) * 0.5 - path[i].z;
 
                 PointPose candidate;
-                candidate.x = path[i].x + alpha * smooth_force.x;
-                candidate.y = path[i].y + alpha * smooth_force.y;
-                candidate.z = path[i].z + alpha * smooth_force.z;
+                candidate.x = path[i].x + alpha_eff * smooth_force.x;
+                candidate.y = path[i].y + alpha_eff * smooth_force.y;
+                candidate.z = path[i].z + alpha_eff * smooth_force.z;
+
+                // 限制每步位移，防止拐角处跳跃
+                const double move_dist = std::sqrt(
+                    (candidate.x - path[i].x) * (candidate.x - path[i].x) +
+                    (candidate.y - path[i].y) * (candidate.y - path[i].y) +
+                    (candidate.z - path[i].z) * (candidate.z - path[i].z));
+                if (move_dist > max_step) {
+                    const double scale = max_step / move_dist;
+                    candidate.x = path[i].x + (candidate.x - path[i].x) * scale;
+                    candidate.y = path[i].y + (candidate.y - path[i].y) * scale;
+                    candidate.z = path[i].z + (candidate.z - path[i].z) * scale;
+                }
 
                 if (snapToTraversable(candidate, search_radius)) {
                     new_path[i] = candidate;
-                    const double delta = std::sqrt(
-                        (candidate.x - path[i].x) * (candidate.x - path[i].x) +
-                        (candidate.y - path[i].y) * (candidate.y - path[i].y) +
-                        (candidate.z - path[i].z) * (candidate.z - path[i].z));
-                    if (delta > max_delta) max_delta = delta;
+                    if (move_dist > max_delta) max_delta = move_dist;
                 }
             }
 
