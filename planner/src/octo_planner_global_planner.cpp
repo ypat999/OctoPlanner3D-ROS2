@@ -56,6 +56,8 @@ void OctoPlannerGlobalPlanner::configure(
   node->declare_parameter(name + ".preblocked_costmap_radius_cells", 3);
   node->declare_parameter(name + ".preblocked_costmap_weight", 2.5);
   node->declare_parameter(name + ".lowest_traversable_only", false);
+  node->declare_parameter(name + ".start_z", 0.3);
+  node->declare_parameter(name + ".goal_z", 0.3);
 
   // smoothing parameters
   node->declare_parameter(name + ".smoothing_enabled", true);
@@ -82,6 +84,9 @@ void OctoPlannerGlobalPlanner::configure(
   const int preblock_radius  = static_cast<int>(node->get_parameter(name + ".preblocked_costmap_radius_cells").as_int());
   const double preblock_w    = node->get_parameter(name + ".preblocked_costmap_weight").as_double();
   const bool lowest_only     = node->get_parameter(name + ".lowest_traversable_only").as_bool();
+
+  start_z_ = node->get_parameter(name + ".start_z").as_double();
+  goal_z_  = node->get_parameter(name + ".goal_z").as_double();
 
   const bool smoothing_enabled         = node->get_parameter(name + ".smoothing_enabled").as_bool();
   const double smoothing_simplify_eps  = node->get_parameter(name + ".smoothing_simplify_epsilon").as_double();
@@ -167,13 +172,15 @@ nav_msgs::msg::Path OctoPlannerGlobalPlanner::createPlan(
     return plan;
   }
 
+  constexpr double kEps = 1e-6;
+
   global_planner::PointPose sp, gp;
   sp.x = start.pose.position.x;
   sp.y = start.pose.position.y;
-  sp.z = start.pose.position.z;
+  sp.z = std::abs(start.pose.position.z) > kEps ? start.pose.position.z : start_z_;
   gp.x = goal.pose.position.x;
   gp.y = goal.pose.position.y;
-  gp.z = goal.pose.position.z;
+  gp.z = std::abs(goal.pose.position.z) > kEps ? goal.pose.position.z : goal_z_;
 
   RCLCPP_INFO(logger_, "Planning [%.2f,%.2f,%.2f] -> [%.2f,%.2f,%.2f]",
               sp.x, sp.y, sp.z, gp.x, gp.y, gp.z);
