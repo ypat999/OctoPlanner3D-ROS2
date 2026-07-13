@@ -53,9 +53,6 @@ private:
   double goal_z_{0.3};
 
   bool is_configured_ = false;
-
-  double start_z_ = 0.3;
-  double goal_z_  = 0.3;
 };
 
 }  // namespace octo_planner3d
