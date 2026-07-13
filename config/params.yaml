@@ -95,13 +95,18 @@
     lowest_traversable_only: false
 
     # ===== 路径平滑参数 =====
-    # 是否启用路径平滑（简化 -> 样条插值 -> 梯度下降）
-    smoothing_enabled: false
-    # 路径简化容忍度（米），去除到线段距离小于此值的冗余点
+    # 流程：简化(碰撞感知) -> 约束式梯度平滑(稀疏点) -> 碰撞感知插值
+    # 全程基于“线段碰撞检查”(3D DDA)，穿障时回退而非吸附，避免高频震荡与穿障
+    # 是否启用路径平滑
+    smoothing_enabled: true
+    # 路径简化容忍度（米），仅当跳过点后的弦仍可通行时才跳过，避免切角穿障
     smoothing_simplify_epsilon: 0.5
-    # 插值点间距（米），越小路径越密集平滑
+    # 插值点间距（米），Catmull-Rom 曲线若离开安全走廊则该段回退为线性插值
     smoothing_interp_spacing: 0.15
-    # 梯度下降迭代次数，越大路径越平滑但耗时越长
+    # 梯度下降迭代次数（作用于稀疏折角点），越大越平滑
     smoothing_gradient_iterations: 50
-    # 梯度下降步长，越大收敛越快但可能跳过障碍
+    # 梯度下降步长（带迭代衰减与半栅格位移上限），收敛越快越稳
     smoothing_gradient_alpha: 0.3
+    # cost 场梯度排斥步长，−∇cost 推开路径远离障碍（迭代中替代碰撞检查）
+    # buildTraversableGrid 已将非可通行格 cost 置为 1.0，故梯度始终指向远离障碍方向
+    smoothing_cost_gradient_beta: 0.2

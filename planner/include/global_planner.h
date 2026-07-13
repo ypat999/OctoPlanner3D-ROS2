@@ -8,8 +8,11 @@
  */
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -107,6 +110,7 @@ public:
   void setSmoothingInterpSpacing(double spacing) { smoothing_interp_spacing_ = spacing; }
   void setSmoothingGradientIterations(int iters) { smoothing_gradient_iters_ = iters; }
   void setSmoothingGradientAlpha(double alpha) { smoothing_gradient_alpha_ = alpha; }
+  void setSmoothingCostGradientBeta(double beta) { smoothing_cost_gradient_beta_ = beta; }
 
   /** 对规划结果执行路径平滑 */
   void smoothPath();
@@ -198,14 +202,17 @@ private:
     GridIndex current) const;
 
   // ===== 路径平滑实现 =====
-  /** 简化路径：去除共线/近似共线的冗余点 */
+  /** 简化路径：去除共线/近似共线的冗余点（仅当跳过点后的弦仍可通行时才跳过） */
   void simplifyPath(std::vector<PointPose> & path, double epsilon) const;
-  /** Catmull-Rom 样条插值：在路径点之间生成高密度平滑点 */
+  /** 碰撞感知的 Catmull-Rom 样条插值：曲线若离开安全走廊则回退到线性插值 */
   void interpolatePath(const std::vector<PointPose> & input, std::vector<PointPose> & output, double spacing) const;
-  /** 梯度下降平滑：迭代优化路径点位置，最小化曲率同时保持可通行 */
-  void gradientDescentSmooth(std::vector<PointPose> & path, int max_iters, double alpha) const;
-  /** 检查路径点是否可通行，若不可通行则吸附到最近可通行点 */
-  bool snapToTraversable(PointPose & pt, int search_radius_cells) const;
+  /** 代价场梯度平滑：拉普拉斯平滑力 + (−∇cost) 排斥力，O(1) 代价门控接受；
+   *  迭代中不做碰撞检查；末尾做一次线段安全验证并回退 */
+  void gradientDescentSmooth(std::vector<PointPose> & path, int max_iters, double alpha, double beta) const;
+  /** 线段碰撞检查：用 3D DDA 遍历线段穿过的所有体素，任一体素不可通行则返回 false */
+  bool isSegmentTraversable(const PointPose & a, const PointPose & b) const;
+  /** 代价场查询（供平滑优化）：非可通行/越界格返回 1.0，可通行格返回预阻塞代价 */
+  double costFieldAt(const GridIndex & idx) const;
 
   bool startPlan();
 
@@ -243,7 +250,8 @@ private:
   double smoothing_simplify_epsilon_ = 0.1;      // 简化容忍度（米）
   double smoothing_interp_spacing_ = 0.15;        // 插值点间距（米）
   int smoothing_gradient_iters_ = 50;             // 梯度下降迭代次数
-  double smoothing_gradient_alpha_ = 0.3;         // 梯度下降步长
+  double smoothing_gradient_alpha_ = 0.3;         // 拉普拉斯平滑步长
+  double smoothing_cost_gradient_beta_ = 0.2;     // cost 场梯度排斥步长
 
   bool map_ready_ = false;
   bool has_start_ = false;

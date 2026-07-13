@@ -65,6 +65,7 @@ void OctoPlannerGlobalPlanner::configure(
   node->declare_parameter(name + ".smoothing_interp_spacing", 0.15);
   node->declare_parameter(name + ".smoothing_gradient_iterations", 50);
   node->declare_parameter(name + ".smoothing_gradient_alpha", 0.3);
+  node->declare_parameter(name + ".smoothing_cost_gradient_beta", 0.2);
 
   // ---- read parameter values  ----
   const std::string input_pcd    = node->get_parameter(name + ".input_pcd").as_string();
@@ -93,6 +94,7 @@ void OctoPlannerGlobalPlanner::configure(
   const double smoothing_interp_space  = node->get_parameter(name + ".smoothing_interp_spacing").as_double();
   const int smoothing_grad_iters       = static_cast<int>(node->get_parameter(name + ".smoothing_gradient_iterations").as_int());
   const double smoothing_grad_alpha    = node->get_parameter(name + ".smoothing_gradient_alpha").as_double();
+  const double smoothing_cost_grad_beta = node->get_parameter(name + ".smoothing_cost_gradient_beta").as_double();
 
   // ---- build OctoMap from PCD  ----
   RCLCPP_INFO(logger_, "Building OctoMap from %s ...", input_pcd.c_str());
@@ -132,6 +134,7 @@ void OctoPlannerGlobalPlanner::configure(
   planner_->setSmoothingInterpSpacing(smoothing_interp_space);
   planner_->setSmoothingGradientIterations(smoothing_grad_iters);
   planner_->setSmoothingGradientAlpha(smoothing_grad_alpha);
+  planner_->setSmoothingCostGradientBeta(smoothing_cost_grad_beta);
 
   const std::string cache_path =
     (output_bt.empty() ? input_pcd : output_bt) + "_planning_cache";

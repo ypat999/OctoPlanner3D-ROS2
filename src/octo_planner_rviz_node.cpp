@@ -145,6 +145,8 @@ public:
       declare_parameter<int>("smoothing_gradient_iterations", 50);
     const double smoothing_gradient_alpha =
       declare_parameter<double>("smoothing_gradient_alpha", 0.3);
+    const double smoothing_cost_gradient_beta =
+      declare_parameter<double>("smoothing_cost_gradient_beta", 0.2);
 
     converter_ = std::make_shared<pcd2octomap::Pcd2OctomapConverter>();
     converter_->setInputPcdFile(input_pcd);
@@ -176,6 +178,7 @@ public:
     planner_->setSmoothingInterpSpacing(smoothing_interp_spacing);
     planner_->setSmoothingGradientIterations(smoothing_gradient_iterations);
     planner_->setSmoothingGradientAlpha(smoothing_gradient_alpha);
+    planner_->setSmoothingCostGradientBeta(smoothing_cost_gradient_beta);
 
     // ===== Action Server: 在 OctoMap 构建前注册，确保 bt_navigator 启动时可见 =====
     using nav2_msgs::action::ComputePathToPose;
