@@ -217,10 +217,7 @@ public:
       create_publisher<visualization_msgs::msg::Marker>("planned_path_marker", transient_qos);
     nav_start_marker_pub_ =
       create_publisher<visualization_msgs::msg::Marker>("nav_start_marker", transient_qos);
-    nav_goal_marker_pub_ =
-      create_publisher<visualization_msgs::msg::Marker>("nav_goal_marker", transient_qos);
-
-    // 测试路径发布器（仅供可视化，不影响导航）
+    // 测试目标Marker可视化
     test_path_pub_ = create_publisher<nav_msgs::msg::Path>("test_path", transient_qos);
     test_path_marker_pub_ =
       create_publisher<visualization_msgs::msg::Marker>("test_path_marker", transient_qos);
@@ -229,16 +226,11 @@ public:
     test_goal_marker_pub_ =
       create_publisher<visualization_msgs::msg::Marker>("test_goal_marker", transient_qos);
 
-    // 订阅器：导航模式（initialpose + goal_pose）
+    // 订阅器：导航模式（initialpose 设置起点，通过 compute_path_to_pose action 接收目标）
     start_sub_ = create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
       "initialpose",
       rclcpp::QoS(10),
       std::bind(&OctoPlannerRvizNode::onNavStartPose, this, std::placeholders::_1));
-    goal_sub_ = create_subscription<geometry_msgs::msg::PoseStamped>(
-      "goal_pose",
-      rclcpp::QoS(10),
-      std::bind(&OctoPlannerRvizNode::onNavGoalPose, this, std::placeholders::_1));
-
     // 订阅器：测试模式（RViz Publish Point）
     clicked_point_sub_ = create_subscription<geometry_msgs::msg::PointStamped>(
       clicked_point_topic,
@@ -248,7 +240,7 @@ public:
     // 初始化 TF2（用于自动获取机器人位置）
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
-    RCLCPP_INFO(get_logger(), "TF2 initialized. Auto-start from robot position when goal_pose received without initialpose.");
+    RCLCPP_INFO(get_logger(), "TF2 initialized.");
 
     // Nav2 ComputePathToPose Action Server
     compute_path_action_server_ = rclcpp_action::create_server<nav2_msgs::action::ComputePathToPose>(
@@ -268,7 +260,7 @@ public:
 
     RCLCPP_INFO(
       get_logger(),
-      "Ready. Use RViz2 Publish Point on %s: first click sets start, second click sets goal.",
+      "Ready. Use RViz2 Publish Point on %s for test path.",
       clicked_point_topic.c_str());
   }
 
@@ -285,52 +277,6 @@ private:
       nav_start_.x,
       nav_start_.y,
       nav_start_.z);
-    planNavPath();
-  }
-
-  void onNavGoalPose(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
-  {
-    // 保存导航目标朝向（用于路径朝向计算）
-    nav_goal_orientation_ = msg->pose.orientation;
-
-    nav_goal_ = toPlannerPoint(msg->pose, goal_z_);
-    has_nav_goal_ = true;
-    publishPoseMarker(nav_goal_, "nav_goal", 0, makeColor(0.95F, 0.25F, 0.15F, 1.0F), nav_goal_marker_pub_);
-    RCLCPP_INFO(
-      get_logger(),
-      "[Nav Mode] Goal set to [%.3f, %.3f, %.3f]",
-      nav_goal_.x,
-      nav_goal_.y,
-      nav_goal_.z);
-
-    // 每次 goal_pose 从 TF 重新获取机器人当前位置作为起点
-    // 这样即使机器人移动了，新路径也从当前位置开始规划
-    try {
-      geometry_msgs::msg::TransformStamped transform;
-      transform = tf_buffer_->lookupTransform(
-        frame_id_, robot_base_frame_,
-        tf2::TimePointZero);
-
-      nav_start_.x = transform.transform.translation.x;
-      nav_start_.y = transform.transform.translation.y;
-      nav_start_.z = transform.transform.translation.z;
-      if (std::abs(nav_start_.z) < kZeroZThreshold) {
-        nav_start_.z = start_z_;
-      }
-
-      has_nav_start_ = true;
-      publishPoseMarker(nav_start_, "nav_start", 0, makeColor(0.1F, 0.9F, 0.2F, 1.0F), nav_start_marker_pub_);
-      RCLCPP_INFO(
-        get_logger(),
-        "[Nav Mode] Auto-start from robot TF: [%.3f, %.3f, %.3f]",
-        nav_start_.x,
-        nav_start_.y,
-        nav_start_.z);
-    } catch (const tf2::TransformException & ex) {
-      RCLCPP_WARN(get_logger(), "[Nav Mode] Failed to get robot position from TF: %s", ex.what());
-      has_nav_start_ = false;
-    }
-
     planNavPath();
   }
 
@@ -987,9 +933,8 @@ private:
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr path_marker_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr nav_start_marker_pub_;
-  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr nav_goal_marker_pub_;
 
-  // 测试路径发布器（仅供可视化，不影响导航）
+  // 路径发布器（仅供可视化，不影响导航）
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr test_path_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr test_path_marker_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr test_start_marker_pub_;
@@ -1001,7 +946,6 @@ private:
 
   // 订阅器
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr start_sub_;
-  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr clicked_point_sub_;
 
   // Nav2 ComputePathToPose Action Server
