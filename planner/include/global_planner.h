@@ -111,6 +111,9 @@ public:
   void setSmoothingGradientIterations(int iters) { smoothing_gradient_iters_ = iters; }
   void setSmoothingGradientAlpha(double alpha) { smoothing_gradient_alpha_ = alpha; }
   void setSmoothingCostGradientBeta(double beta) { smoothing_cost_gradient_beta_ = beta; }
+  void setSmoothingCostTolerance(double tol) { smoothing_cost_tolerance_ = tol; }
+  void setSmoothingMaxStep(double step) { smoothing_max_step_ = step; }
+  void setSmoothingZWindowRadius(int r) { smoothing_z_window_radius_ = r; }
 
   /** 对规划结果执行路径平滑 */
   void smoothPath();
@@ -209,6 +212,13 @@ private:
   /** 代价场梯度平滑：拉普拉斯平滑力 + (−∇cost) 排斥力，O(1) 代价门控接受；
    *  迭代中不做碰撞检查；末尾做一次线段安全验证并回退 */
   void gradientDescentSmooth(std::vector<PointPose> & path, int max_iters, double alpha, double beta) const;
+
+  /**
+   * @brief z 方向台阶平滑：沿路径做加权滑动平均，消除栅格离散化导致的楼梯状路径
+   * @param path 路径点（原地修改）
+   * @param window_radius 滑动窗口半径（每侧邻居数）
+   */
+  void smoothZStairSteps(std::vector<PointPose> & path, int window_radius) const;
   /** 线段碰撞检查：用 3D DDA 遍历线段穿过的所有体素，任一体素不可通行则返回 false */
   bool isSegmentTraversable(const PointPose & a, const PointPose & b) const;
   /** 代价场查询（供平滑优化）：非可通行/越界格返回 1.0，可通行格返回预阻塞代价 */
@@ -252,6 +262,9 @@ private:
   int smoothing_gradient_iters_ = 50;             // 梯度下降迭代次数
   double smoothing_gradient_alpha_ = 0.3;         // 拉普拉斯平滑步长
   double smoothing_cost_gradient_beta_ = 0.2;     // cost 场梯度排斥步长
+  double smoothing_cost_tolerance_ = 0.1;          // 代价门控容差，允许沿等代价线微调
+  double smoothing_max_step_ = 0.0;                // 单步位移上限（0=auto=res*0.5）
+  int smoothing_z_window_radius_ = 3;              // z 台阶平滑窗口半径
 
   bool map_ready_ = false;
   bool has_start_ = false;

@@ -698,7 +698,18 @@ namespace global_planner
 
             std::vector<GridIndex> local_results;
 
+            // 先用 occupancy cache 快速定位第一个非占据 z 层（即地面以上），
+            // 跳过大段地下岩层，避免对每个 z 都做昂贵的 isCellTraversable。
+            int first_free_z = max_idx.z + 1;
             for (int z = min_idx.z; z <= max_idx.z; ++z) {
+                if (!isOccupiedCell(GridIndex{x, y, z})) {
+                    first_free_z = z;
+                    break;
+                }
+            }
+
+            // 从第一个 free cell 开始检查 traversability
+            for (int z = first_free_z; z <= max_idx.z; ++z) {
                 const GridIndex idx{x, y, z};
                 if (!isInsideMetricBounds(idx) || isOccupiedCell(idx)) {
                     continue;
@@ -830,14 +841,45 @@ namespace global_planner
             return;
         }
         const clock_t build_start = clock();
-        occupancy_cache_.reserve(octree_->getNumLeafNodes());
+
+        size_t occupied_leaves = 0, expanded_cells = 0;
+
+        const double res = octree_->getResolution();
+        const double eps = res * 1e-6;
+
         for (auto it = octree_->begin_leafs(); it != octree_->end_leafs(); ++it) {
-            if (octree_->isNodeOccupied(*it)) {
-                occupancy_cache_.insert(worldToGrid(it.getX(), it.getY(), it.getZ()));
+            if (!octree_->isNodeOccupied(*it)) continue;
+            ++occupied_leaves;
+
+            double size = it.getSize();
+            if (size <= res * 1.01) {
+                // 细叶子：直接映射单个格子
+                GridIndex gi = worldToGrid(it.getX(), it.getY(), it.getZ());
+                occupancy_cache_.insert(gi);
+            } else {
+                // 粗叶子：展开为全部被覆盖的细格子
+                double half = size * 0.5;
+                double cx = it.getX(), cy = it.getY(), cz = it.getZ();
+                GridIndex lo = worldToGrid(cx - half + eps, cy - half + eps, cz - half + eps);
+                GridIndex hi = worldToGrid(cx + half - eps, cy + half - eps, cz + half - eps);
+                for (int gx = lo.x; gx <= hi.x; ++gx) {
+                    for (int gy = lo.y; gy <= hi.y; ++gy) {
+                        for (int gz = lo.z; gz <= hi.z; ++gz) {
+                            GridIndex gi{gx, gy, gz};
+                            occupancy_cache_.insert(gi);
+                            ++expanded_cells;
+                        }
+                    }
+                }
             }
         }
-        std::cout << "  Occupancy cache: built " << occupancy_cache_.size()
-                  << " cells from " << octree_->getNumLeafNodes() << " leaf nodes in "
+
+        std::cout << "  Occupancy cache: " << occupied_leaves << " occupied leaves, "
+                  << occupancy_cache_.size() << " grid cells";
+        if (expanded_cells > 0) {
+            std::cout << " (" << expanded_cells << " from coarse leaf expansion)";
+        }
+        std::cout << " in "
                   << ((clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC))
                   << " s" << std::endl;
     }
@@ -1080,6 +1122,7 @@ namespace global_planner
         }
 
         std::cout << "GlobalPlanner: planning cache not found, rebuilding..." << std::endl;
+        buildOccupancyCache();
         rebuildPreblockedCells();
         rebuildDerivedLayers();
         rebuildPreblockedCostmap();
@@ -1263,18 +1306,69 @@ namespace global_planner
             return;
         }
 
-        // 流程重排（nav2 smac 思路）：先简化 -> 再对稀疏点做约束平滑 -> 最后碰撞感知插值
-        // 关键：平滑作用在“稀疏的真实折角点”上，而非密集插值点上，可从根本上抑制高频震荡。
         simplifyPath(planner_results_, smoothing_simplify_epsilon_);
         if (planner_results_.size() < 2) return;
 
-        gradientDescentSmooth(
-            planner_results_, smoothing_gradient_iters_,
-            smoothing_gradient_alpha_, smoothing_cost_gradient_beta_);
+        smoothZStairSteps(planner_results_, smoothing_z_window_radius_);
+
+        constexpr size_t MIN_GRADIENT_POINTS = 8;
+        if (planner_results_.size() >= MIN_GRADIENT_POINTS) {
+            gradientDescentSmooth(
+                planner_results_, smoothing_gradient_iters_,
+                smoothing_gradient_alpha_, smoothing_cost_gradient_beta_);
+        }
 
         std::vector<PointPose> interp;
         interpolatePath(planner_results_, interp, smoothing_interp_spacing_);
         planner_results_ = std::move(interp);
+    }
+
+    // ============================================================================
+    // z 方向台阶平滑：消除 3D 栅格离散化导致的楼梯状路径
+    // ============================================================================
+    void GlobalPlanner::smoothZStairSteps(
+        std::vector<PointPose> & path,
+        int window_radius) const
+    {
+        if (path.size() < 3 || window_radius < 1) return;
+
+        const double res = octree_ ? octree_->getResolution() : 0.5;
+        std::vector<PointPose> smoothed = path;
+
+        for (size_t i = 1; i + 1 < path.size(); ++i) {
+            // 加权滑动平均：离 i 越近的邻居权重越大（三角权重）
+            double z_sum = 0.0;
+            double weight_sum = 0.0;
+            for (int k = -window_radius; k <= window_radius; ++k) {
+                int j = static_cast<int>(i) + k;
+                if (j < 0 || j >= static_cast<int>(path.size())) continue;
+                double w = window_radius + 1.0 - std::abs(k);  // 三角权重
+                z_sum += w * path[j].z;
+                weight_sum += w;
+            }
+            double z_smooth = z_sum / weight_sum;
+
+            // 约束：z 位移不超过 ±res（保持在原栅格或相邻栅格，确保安全）
+            const double z_min = path[i].z - res;
+            const double z_max = path[i].z + res;
+            smoothed[i].z = std::clamp(z_smooth, z_min, z_max);
+
+            // 验证新 z 所在体素是否可通行
+            const GridIndex gi = worldToGrid(smoothed[i].x, smoothed[i].y, smoothed[i].z);
+            if (!isTraversableGrid(gi)) {
+                smoothed[i].z = path[i].z;  // 回退
+            }
+        }
+
+        // 逐段 DDA 验证，z 平滑后个别段可能穿障，不安全则对该段两点回退 z
+        for (size_t i = 1; i < path.size(); ++i) {
+            if (!isSegmentTraversable(smoothed[i - 1], smoothed[i])) {
+                smoothed[i].z = path[i].z;
+                smoothed[i - 1].z = path[i - 1].z;
+            }
+        }
+
+        path = std::move(smoothed);
     }
 
     bool GlobalPlanner::isSegmentTraversable(const PointPose & a, const PointPose & b) const
@@ -1517,11 +1611,11 @@ namespace global_planner
         if (path.size() < 3) return;
 
         const double res = octree_ ? octree_->getResolution() : 0.5;
-        // 每步位移上限 = 半栅格，防止拐角处大幅跳跃
-        const double max_step = res * 0.5;
+        // 每步位移上限，防止拐角处大幅跳跃（0=auto=半栅格）
+        const double max_step = (smoothing_max_step_ > 0.0) ? smoothing_max_step_ : (res * 0.5);
         // 代价门控容差：允许沿等代价线微调（容许小幅 uphill 以便拐角圆化），
         // 但禁止明显向障碍靠近，从源头阻止拉普拉斯把点拉向墙
-        const double cost_tol = 0.1;
+        const double cost_tol = smoothing_cost_tolerance_;
 
         // 保留简化后路径用于末尾安全回退（简化阶段已保证每段可通行）
         const std::vector<PointPose> original = path;
@@ -1543,7 +1637,6 @@ namespace global_planner
                 smooth_force.z = (path[i - 1].z + path[i + 1].z) * 0.5 - path[i].z;
 
                 // ---- 2. cost 场梯度排斥力：−∇cost，O(1) 中心差分 ----
-                // 障碍=1.0、远障碍=0，故 −∇cost 始终指向远离障碍的安全方向
                 const GridIndex gi = worldToGrid(path[i].x, path[i].y, path[i].z);
                 const double gx = (costFieldAt(GridIndex{gi.x + 1, gi.y, gi.z}) -
                                    costFieldAt(GridIndex{gi.x - 1, gi.y, gi.z})) / (2.0 * res);
@@ -1570,45 +1663,64 @@ namespace global_planner
                     move_dist = max_step;
                 }
 
-                // ---- 4. O(1) 代价门控：候选点代价不得显著高于当前点 ----
-                // 迭代中用代价场替代逐次 DDA 碰撞检查，避免频繁碰撞检查。
-                // 仅当候选点处于同等或更安全的区域才接受移动。
+                // ---- 4. 代价门控 + 线段安全检查 ----
                 const GridIndex ci = worldToGrid(candidate.x, candidate.y, candidate.z);
-                if (costFieldAt(ci) <= costFieldAt(gi) + cost_tol) {
+                if (costFieldAt(ci) <= costFieldAt(gi) + cost_tol &&
+                    isSegmentTraversable(path[i - 1], candidate) &&
+                    isSegmentTraversable(candidate, path[i + 1])) {
                     new_path[i] = candidate;
                     if (move_dist > max_delta) max_delta = move_dist;
                 }
-                // else: 保持原值（回退）
             }
 
             path = std::move(new_path);
-
             if (max_delta < 1e-6) break;  // 收敛
         }
 
-        // ---- 末尾单次安全验证：逐段 DDA，穿障则回退到简化前位置 ----
-        // 非频繁——仅在此做一次遍历（非每迭代），保证稀疏路径每段可通行，
-        // 使后续 interpolatePath 的线性回退可靠。
-        // original 的每段已由 simplifyPath 验证可通行，故回退到 original 必安全、必收敛。
-        for (int pass = 0; pass < 3; ++pass) {
+        // ---- 末尾安全验证：二分搜索找回最大安全位移 ----
+        const int BS_DEPTH = 10;
+        for (int pass = 0; pass < 5; ++pass) {
             bool any_unsafe = false;
             for (size_t i = 1; i + 1 < path.size(); ++i) {
                 if (!isSegmentTraversable(path[i - 1], path[i]) ||
                     !isSegmentTraversable(path[i], path[i + 1])) {
-                    path[i] = original[i];
+                    PointPose lo = original[i];
+                    PointPose hi = path[i];
+                    for (int bs = 0; bs < BS_DEPTH; ++bs) {
+                        PointPose mid;
+                        mid.x = (lo.x + hi.x) * 0.5;
+                        mid.y = (lo.y + hi.y) * 0.5;
+                        mid.z = (lo.z + hi.z) * 0.5;
+                        if (isSegmentTraversable(path[i - 1], mid) &&
+                            isSegmentTraversable(mid, path[i + 1])) {
+                            lo = mid;
+                        } else {
+                            hi = mid;
+                        }
+                    }
+                    path[i] = lo;
                     any_unsafe = true;
                 }
             }
             if (!any_unsafe) break;
         }
-        // 兜底：极少数情况下仍有不安全段，整体回退到原始简化路径（保证安全）
+
+        // 兜底：顽固点退回 original；全部退回则整体恢复
+        bool all_original = true;
         for (size_t i = 1; i + 1 < path.size(); ++i) {
             if (!isSegmentTraversable(path[i - 1], path[i]) ||
                 !isSegmentTraversable(path[i], path[i + 1])) {
-                path = original;
-                break;
+                path[i] = original[i];
             }
         }
+        for (size_t i = 0; i < path.size() && all_original; ++i) {
+            if (std::abs(path[i].x - original[i].x) > 1e-6 ||
+                std::abs(path[i].y - original[i].y) > 1e-6 ||
+                std::abs(path[i].z - original[i].z) > 1e-6) {
+                all_original = false;
+            }
+        }
+        if (all_original) path = original;
     }
 
 }

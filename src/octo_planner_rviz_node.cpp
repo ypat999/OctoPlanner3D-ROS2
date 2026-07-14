@@ -147,6 +147,12 @@ public:
       declare_parameter<double>("smoothing_gradient_alpha", 0.3);
     const double smoothing_cost_gradient_beta =
       declare_parameter<double>("smoothing_cost_gradient_beta", 0.2);
+    const double smoothing_cost_tolerance =
+      declare_parameter<double>("smoothing_cost_tolerance", 0.1);
+    const double smoothing_max_step =
+      declare_parameter<double>("smoothing_max_step", 0.0);
+    const int smoothing_z_window_radius =
+      declare_parameter<int>("smoothing_z_window_radius", 3);
 
     converter_ = std::make_shared<pcd2octomap::Pcd2OctomapConverter>();
     converter_->setInputPcdFile(input_pcd);
@@ -179,6 +185,40 @@ public:
     planner_->setSmoothingGradientIterations(smoothing_gradient_iterations);
     planner_->setSmoothingGradientAlpha(smoothing_gradient_alpha);
     planner_->setSmoothingCostGradientBeta(smoothing_cost_gradient_beta);
+    planner_->setSmoothingCostTolerance(smoothing_cost_tolerance);
+    planner_->setSmoothingMaxStep(smoothing_max_step);
+    planner_->setSmoothingZWindowRadius(smoothing_z_window_radius);
+
+    // ===== 参数运行时修改回调（支持 ros2 param set 实时调整） =====
+    param_handler_ = add_on_set_parameters_callback(
+      [this](const std::vector<rclcpp::Parameter> & params) {
+        for (const auto & p : params) {
+          const auto & name = p.get_name();
+          if (name == "robot_radius") planner_->setRobotRadius(p.as_double());
+          else if (name == "max_iterations") planner_->setMaxIterations(p.as_int());
+          else if (name == "snap_search_radius_cells") planner_->setSnapSearchRadiusCells(p.as_int());
+          else if (name == "require_ground_support") planner_->setRequireGroundSupport(p.as_bool());
+          else if (name == "strict_direct_ground_support") planner_->setStrictDirectGroundSupport(p.as_bool());
+          else if (name == "ground_support_xy_radius_cells") planner_->setGroundSupportXYRadiusCells(p.as_int());
+          else if (name == "ground_support_depth_cells") planner_->setGroundSupportDepthCells(p.as_int());
+          else if (name == "enable_preblocked_costmap") planner_->setEnablePreblockedCostmap(p.as_bool());
+          else if (name == "preblocked_costmap_radius_cells") planner_->setPreblockedCostmapRadiusCells(p.as_int());
+          else if (name == "preblocked_costmap_weight") planner_->setPreblockedCostmapWeight(p.as_double());
+          else if (name == "lowest_traversable_only") planner_->setLowestTraversableOnly(p.as_bool());
+          else if (name == "smoothing_enabled") planner_->setSmoothingEnabled(p.as_bool());
+          else if (name == "smoothing_simplify_epsilon") planner_->setSmoothingSimplifyEpsilon(p.as_double());
+          else if (name == "smoothing_interp_spacing") planner_->setSmoothingInterpSpacing(p.as_double());
+          else if (name == "smoothing_gradient_iterations") planner_->setSmoothingGradientIterations(p.as_int());
+          else if (name == "smoothing_gradient_alpha") planner_->setSmoothingGradientAlpha(p.as_double());
+          else if (name == "smoothing_cost_gradient_beta") planner_->setSmoothingCostGradientBeta(p.as_double());
+          else if (name == "smoothing_cost_tolerance") planner_->setSmoothingCostTolerance(p.as_double());
+          else if (name == "smoothing_max_step") planner_->setSmoothingMaxStep(p.as_double());
+          else if (name == "smoothing_z_window_radius") planner_->setSmoothingZWindowRadius(p.as_int());
+        }
+        rcl_interfaces::msg::SetParametersResult result;
+        result.successful = true;
+        return result;
+      });
 
     // ===== Action Server: 在 OctoMap 构建前注册，确保 bt_navigator 启动时可见 =====
     using nav2_msgs::action::ComputePathToPose;
@@ -340,16 +380,38 @@ private:
     const size_t report_interval = std::max(size_t(1), total_leafs / 10);
     size_t processed = 0;
 
+    const double res = octree_->getResolution();
+    const double eps = res * 1e-6;
+
     for (auto it = octree_->begin_leafs(); it != octree_->end_leafs(); ++it) {
       if (!octree_->isNodeOccupied(*it)) {
         continue;
       }
-      CachedVoxel voxel;
-      voxel.x = static_cast<float>(it.getX());
-      voxel.y = static_cast<float>(it.getY());
-      voxel.z = static_cast<float>(it.getZ());
-      voxel.size = static_cast<float>(it.getSize());
-      cached_voxels_.push_back(voxel);
+      double size = it.getSize();
+      if (size <= res * 1.01) {
+        // 细叶子：直接存
+        CachedVoxel voxel;
+        voxel.x = static_cast<float>(it.getX());
+        voxel.y = static_cast<float>(it.getY());
+        voxel.z = static_cast<float>(it.getZ());
+        voxel.size = static_cast<float>(size);
+        cached_voxels_.push_back(voxel);
+      } else {
+        // 粗叶子：展开为细格子存入
+        double half = size * 0.5;
+        for (double cx = it.getX() - half + res * 0.5; cx <= it.getX() + half - eps; cx += res) {
+          for (double cy = it.getY() - half + res * 0.5; cy <= it.getY() + half - eps; cy += res) {
+            for (double cz = it.getZ() - half + res * 0.5; cz <= it.getZ() + half - eps; cz += res) {
+              CachedVoxel voxel;
+              voxel.x = static_cast<float>(cx);
+              voxel.y = static_cast<float>(cy);
+              voxel.z = static_cast<float>(cz);
+              voxel.size = static_cast<float>(res);
+              cached_voxels_.push_back(voxel);
+            }
+          }
+        }
+      }
 
       ++processed;
       if (processed % report_interval == 0) {
@@ -465,6 +527,7 @@ private:
                 test_start_.x, test_start_.y, test_start_.z, test_goal_.x, test_goal_.y, test_goal_.z);
     const auto t_start = std::chrono::steady_clock::now();
     planner_->makePlan(test_start_, test_goal_);
+    planner_->smoothPath();
     const double plan_elapsed =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
 
@@ -1028,6 +1091,9 @@ private:
   
 
   rclcpp::TimerBase::SharedPtr map_timer_;
+
+  // 参数运行时修改回调句柄
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_handler_;
 };
 
 int main(int argc, char ** argv)

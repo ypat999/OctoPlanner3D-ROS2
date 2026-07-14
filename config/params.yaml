@@ -11,7 +11,7 @@
     # OctoMap 构建参数
     resolution: 0.5            # 体素分辨率（米），建议与 PCD 降采样分辨率一致
     min_points_per_voxel: 1    # 每个体素至少需要的点数，已降采样的点云建议设为 1
-    min_cluster_voxels: 1      # 最小连通聚类体素数，已降采样的点云建议设为 1
+    min_cluster_voxels: 2      # 最小连通聚类体素数，已降采样的点云建议设为 1
 
     openmp_num_threads: 0      # OpenMP 并行线程数（0 = 自动，1 = 禁止并行，4 = 4 线程）
 
@@ -84,7 +84,7 @@
     # 预阻塞半径（栅格数），影响机器人高度约束
     # 公式：机器人高度（米） ≈ preblocked_costmap_radius_cells × resolution
     # 示例：resolution=0.05米时，radius_cells=6 ⇒ 高度0.3米
-    preblocked_costmap_radius_cells: 3
+    preblocked_costmap_radius_cells: 2
 
     # 预阻塞代价权重，增加此值会让路径更远离障碍物
     # 增加此值可减少靠近草丛和路沿的行为，路径会保持在更平坦的区域
@@ -100,13 +100,21 @@
     # 是否启用路径平滑
     smoothing_enabled: true
     # 路径简化容忍度（米），仅当跳过点后的弦仍可通行时才跳过，避免切角穿障
-    smoothing_simplify_epsilon: 0.5
+    smoothing_simplify_epsilon: 0.15
     # 插值点间距（米），Catmull-Rom 曲线若离开安全走廊则该段回退为线性插值
     smoothing_interp_spacing: 0.15
-    # 梯度下降迭代次数（作用于稀疏折角点），越大越平滑
-    smoothing_gradient_iterations: 50
+    # 梯度下降迭代次数（作用于稀疏折角点），越大越平
+    smoothing_gradient_iterations: 200
     # 梯度下降步长（带迭代衰减与半栅格位移上限），收敛越快越稳
     smoothing_gradient_alpha: 0.3
     # cost 场梯度排斥步长，−∇cost 推开路径远离障碍（迭代中替代碰撞检查）
     # buildTraversableGrid 已将非可通行格 cost 置为 1.0，故梯度始终指向远离障碍方向
     smoothing_cost_gradient_beta: 0.2
+    # 代价门控容差，允许沿等代价线微调以便拐角圆化，但禁止明显向障碍靠近
+    # 越大路径越贴墙，越小越保守远离障碍
+    smoothing_cost_tolerance: 0.1
+    # 单步位移上限（米），防止梯度下降时拐角处大幅跳跃；0=auto=半栅格(res*0.5)
+    smoothing_max_step: 0.0
+    # z 方向台阶平滑窗口半径，消除栅格离散化导致的楼梯状路径
+    # 沿路径做加权滑动平均，越大越平滑但也越接近斜坡附近的 free space 边界
+    smoothing_z_window_radius: 3
