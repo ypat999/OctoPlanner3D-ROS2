@@ -114,6 +114,11 @@ public:
   void setSmoothingCostTolerance(double tol) { smoothing_cost_tolerance_ = tol; }
   void setSmoothingMaxStep(double step) { smoothing_max_step_ = step; }
   void setSmoothingZWindowRadius(int r) { smoothing_z_window_radius_ = r; }
+  /** 设置 z 方向非对称平滑比率：
+   *  当前点低于邻居均值时接受完整上行修正（提升低点），
+   *  高于邻居均值时按下行比率 damp 下行修正（避免压入地面）。
+   *  0.0 = 只提不降，1.0 = 对称平滑（默认 0.3） */
+  void setSmoothingZAsymmetryRatio(double r) { smoothing_z_asymmetry_ratio_ = r; }
 
   /** 对规划结果执行路径平滑 */
   void smoothPath();
@@ -265,6 +270,7 @@ private:
   double smoothing_cost_tolerance_ = 0.1;          // 代价门控容差，允许沿等代价线微调
   double smoothing_max_step_ = 0.0;                // 单步位移上限（0=auto=res*0.5）
   int smoothing_z_window_radius_ = 3;              // z 台阶平滑窗口半径
+  double smoothing_z_asymmetry_ratio_ = 0.3;        // z 非对称比率：下行 damp 系数（0=只提不降, 1=对称）
 
   bool map_ready_ = false;
   bool has_start_ = false;

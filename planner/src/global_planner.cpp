@@ -1621,14 +1621,22 @@ namespace global_planner
         const std::vector<PointPose> original = path;
 
         for (int iter = 0; iter < max_iters; ++iter) {
-            // 迭代衰减：后期仅微调，进一步抑制残余震荡
-            const double decay = 1.0 - static_cast<double>(iter) / max_iters;
+            // 迭代衰减：sqrt(1−t) 衰减曲线比线性更平缓
+            const double t = static_cast<double>(iter) / max_iters;
+            const double decay = std::sqrt(1.0 - t);
             const double alpha_eff = alpha * decay;
-            const double beta_eff = beta * decay;
+
+            // 两阶段策略：
+            //   前半迭代 → 纯 Laplace 平滑，无视 cost，自由拉平台阶和折角
+            //   后半迭代 → 加入 xy cost 梯度排斥，推开墙壁微调（z 方向梯度始终禁用）
+            const bool use_cost = (iter >= max_iters / 2);
+            const double beta_eff = use_cost ? (beta * decay) : 0.0;
+
             double max_delta = 0.0;
 
-            std::vector<PointPose> new_path = path;  // Jacobi 式更新，避免顺序依赖
-
+            // Gauss-Seidel 逐点原地更新：
+            //   处理 path[i] 时 path[i-1] 已是本轮新位置，DDA 检查更准确；
+            //   path[i+1] 仍为旧值，但在下一轮处理 i+1 时会用新 path[i] 重新校验。
             for (size_t i = 1; i + 1 < path.size(); ++i) {
                 // ---- 1. 拉普拉斯平滑力：移向前后邻居中点 ----
                 PointPose smooth_force;
@@ -1636,19 +1644,21 @@ namespace global_planner
                 smooth_force.y = (path[i - 1].y + path[i + 1].y) * 0.5 - path[i].y;
                 smooth_force.z = (path[i - 1].z + path[i + 1].z) * 0.5 - path[i].z;
 
-                // ---- 2. cost 场梯度排斥力：−∇cost，O(1) 中心差分 ----
-                const GridIndex gi = worldToGrid(path[i].x, path[i].y, path[i].z);
-                const double gx = (costFieldAt(GridIndex{gi.x + 1, gi.y, gi.z}) -
-                                   costFieldAt(GridIndex{gi.x - 1, gi.y, gi.z})) / (2.0 * res);
-                const double gy = (costFieldAt(GridIndex{gi.x, gi.y + 1, gi.z}) -
-                                   costFieldAt(GridIndex{gi.x, gi.y - 1, gi.z})) / (2.0 * res);
-                const double gz = (costFieldAt(GridIndex{gi.x, gi.y, gi.z + 1}) -
-                                   costFieldAt(GridIndex{gi.x, gi.y, gi.z - 1})) / (2.0 * res);
+                // ---- 2. cost 场梯度排斥力（仅后半阶段，仅 xy） ----
+                double gx = 0.0, gy = 0.0;
+                if (use_cost) {
+                    const GridIndex gi = worldToGrid(path[i].x, path[i].y, path[i].z);
+                    gx = (costFieldAt(GridIndex{gi.x + 1, gi.y, gi.z}) -
+                          costFieldAt(GridIndex{gi.x - 1, gi.y, gi.z})) / (2.0 * res);
+                    gy = (costFieldAt(GridIndex{gi.x, gi.y + 1, gi.z}) -
+                          costFieldAt(GridIndex{gi.x, gi.y - 1, gi.z})) / (2.0 * res);
+                }
+                // z 方向 cost 梯度始终禁用（地面支撑层会制造虚假向上推力）
 
                 PointPose candidate = path[i];
                 candidate.x += alpha_eff * smooth_force.x - beta_eff * gx;
                 candidate.y += alpha_eff * smooth_force.y - beta_eff * gy;
-                candidate.z += alpha_eff * smooth_force.z - beta_eff * gz;
+                candidate.z += alpha_eff * smooth_force.z;
 
                 // ---- 3. 限制单步位移 ----
                 double move_dist = std::sqrt(
@@ -1663,17 +1673,21 @@ namespace global_planner
                     move_dist = max_step;
                 }
 
-                // ---- 4. 代价门控 + 线段安全检查 ----
-                const GridIndex ci = worldToGrid(candidate.x, candidate.y, candidate.z);
-                if (costFieldAt(ci) <= costFieldAt(gi) + cost_tol &&
-                    isSegmentTraversable(path[i - 1], candidate) &&
-                    isSegmentTraversable(candidate, path[i + 1])) {
-                    new_path[i] = candidate;
+                // ---- 4. 安全检查 ----
+                bool accept = isSegmentTraversable(path[i - 1], candidate) &&
+                              isSegmentTraversable(candidate, path[i + 1]);
+                if (use_cost && accept) {
+                    // 后半阶段追加代价门控：不容许明显向障碍靠近
+                    const GridIndex gi = worldToGrid(path[i].x, path[i].y, path[i].z);
+                    const GridIndex ci = worldToGrid(candidate.x, candidate.y, candidate.z);
+                    accept = (costFieldAt(ci) <= costFieldAt(gi) + cost_tol);
+                }
+                if (accept) {
+                    path[i] = candidate;
                     if (move_dist > max_delta) max_delta = move_dist;
                 }
             }
 
-            path = std::move(new_path);
             if (max_delta < 1e-6) break;  // 收敛
         }
 

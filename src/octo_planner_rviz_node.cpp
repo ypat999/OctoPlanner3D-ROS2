@@ -153,6 +153,8 @@ public:
       declare_parameter<double>("smoothing_max_step", 0.0);
     const int smoothing_z_window_radius =
       declare_parameter<int>("smoothing_z_window_radius", 3);
+    const double smoothing_z_asymmetry_ratio =
+      declare_parameter<double>("smoothing_z_asymmetry_ratio", 0.3);
 
     converter_ = std::make_shared<pcd2octomap::Pcd2OctomapConverter>();
     converter_->setInputPcdFile(input_pcd);
@@ -188,6 +190,7 @@ public:
     planner_->setSmoothingCostTolerance(smoothing_cost_tolerance);
     planner_->setSmoothingMaxStep(smoothing_max_step);
     planner_->setSmoothingZWindowRadius(smoothing_z_window_radius);
+    planner_->setSmoothingZAsymmetryRatio(smoothing_z_asymmetry_ratio);
 
     // ===== 参数运行时修改回调（支持 ros2 param set 实时调整） =====
     param_handler_ = add_on_set_parameters_callback(
@@ -214,6 +217,7 @@ public:
           else if (name == "smoothing_cost_tolerance") planner_->setSmoothingCostTolerance(p.as_double());
           else if (name == "smoothing_max_step") planner_->setSmoothingMaxStep(p.as_double());
           else if (name == "smoothing_z_window_radius") planner_->setSmoothingZWindowRadius(p.as_int());
+          else if (name == "smoothing_z_asymmetry_ratio") planner_->setSmoothingZAsymmetryRatio(p.as_double());
         }
         rcl_interfaces::msg::SetParametersResult result;
         result.successful = true;
