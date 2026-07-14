@@ -120,6 +120,18 @@ public:
    *  0.0 = 只提不降，1.0 = 对称平滑（默认 0.3） */
   void setSmoothingZAsymmetryRatio(double r) { smoothing_z_asymmetry_ratio_ = r; }
 
+  // ===== A* 方向一致性参数 =====
+  /** 设置方向变化惩罚权重：进/出方向夹角越大，惩罚越重（0=禁用）
+   *  用于减少 A* 在阶跃位置走对角线格子导致的局部曲率过大 */
+  void setDirChangeWeight(double w) { dir_change_weight_ = w; }
+  /** 设置阶跃方向变化额外惩罚：进出方向的 z 分量符号不一致时额外加罚（0=禁用）
+   *  用于强化在阶跃处沿路径方向行走，避免斜向变向 */
+  void setStepDirChangeWeight(double w) { step_dir_change_weight_ = w; }
+  /** 设置对角线跨越惩罚：xy 平面对角移动时，若中间轴对齐格子在目标 z 层不可通行，
+   *  说明该对角格子是噪声"桥梁"，用于绕过高度变化（0=禁用）
+   *  典型场景：斜对角 cell 与本 cell 同高，但正前/左右 cell 低一格 */
+  void setDiagonalBridgeWeight(double w) { diagonal_bridge_weight_ = w; }
+
   /** 对规划结果执行路径平滑 */
   void smoothPath();
 
@@ -271,6 +283,11 @@ private:
   double smoothing_max_step_ = 0.0;                // 单步位移上限（0=auto=res*0.5）
   int smoothing_z_window_radius_ = 3;              // z 台阶平滑窗口半径
   double smoothing_z_asymmetry_ratio_ = 0.3;        // z 非对称比率：下行 damp 系数（0=只提不降, 1=对称）
+
+  // ===== A* 方向一致性参数 =====
+  double dir_change_weight_ = 1.5;           // 方向变化惩罚权重（0=禁用）
+  double step_dir_change_weight_ = 2.0;      // 阶跃方向变化额外惩罚（0=禁用）
+  double diagonal_bridge_weight_ = 5.0;      // 对角线跨越惩罚（0=禁用）
 
   bool map_ready_ = false;
   bool has_start_ = false;

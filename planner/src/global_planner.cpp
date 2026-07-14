@@ -227,7 +227,7 @@ namespace global_planner
                 next_log_iter = iters + log_interval;
             }
 
-            for (const auto & dir : directions) 
+            for (const auto & dir : directions)
             {
                 GridIndex nbr{current.idx.x + dir.first.x, current.idx.y + dir.first.y, current.idx.z + dir.first.z};
 
@@ -243,6 +243,67 @@ namespace global_planner
                 double tentative_g = current.g + dir.second;
                 if (enable_preblocked_costmap) {
                     tentative_g += preblocked_costmap_weight * getPreblockedCostGrid(nbr);
+                }
+
+                // 方向一致性惩罚：减少在阶跃位置斜向变向，鼓励沿路径方向直行
+                if (came_from[cur_lin] >= 0) {
+                    // 从 came_from 恢复父节点 GridIndex
+                    const int64_t parent_lin = came_from[cur_lin];
+                    const int64_t pz = parent_lin % grid_dim_z_;
+                    const int64_t prem = parent_lin / grid_dim_z_;
+                    const int64_t py = prem % grid_dim_y_;
+                    const int64_t px = prem / grid_dim_y_;
+                    const GridIndex parent{
+                        static_cast<int>(px + grid_min_.x),
+                        static_cast<int>(py + grid_min_.y),
+                        static_cast<int>(pz + grid_min_.z)};
+
+                    // 进方向 (parent → current) 和出方向 (current → nbr)
+                    const int in_dx = current.idx.x - parent.x;
+                    const int in_dy = current.idx.y - parent.y;
+                    const int in_dz = current.idx.z - parent.z;
+                    const int out_dx = dir.first.x;
+                    const int out_dy = dir.first.y;
+                    const int out_dz = dir.first.z;
+
+                    // 归一化点积 → cos(angle)，用于衡量方向变化
+                    const double in_len = std::sqrt(static_cast<double>(in_dx * in_dx + in_dy * in_dy + in_dz * in_dz));
+                    const double out_len = dir.second;
+                    if (in_len > 1e-6 && out_len > 1e-6) {
+                        const double dot = (in_dx * out_dx + in_dy * out_dy + in_dz * out_dz) / (in_len * out_len);
+                        // (1 - dot) / 2 ∈ [0, 1]：0=同向, 0.5=正交, 1=反向
+                        const double dir_change = (1.0 - dot) * 0.5;
+                        tentative_g += dir_change_weight_ * dir_change;
+
+                        // 阶跃方向变化额外惩罚：
+                        // 进方向有 z 分量但出方向没有，或反之 → 在阶跃处变向
+                        if ((in_dz != 0) != (out_dz != 0)) {
+                            tentative_g += step_dir_change_weight_;
+                        }
+                    }
+                }
+
+                // 对角线跨越惩罚：xy 平面对角移动时，检查中间轴对齐格子
+                // 若中间格子在目标 z 层不可通行，说明对角格子是噪声"桥梁"
+                // 用于绕过高度变化，应加罚以避免折角路径
+                if (diagonal_bridge_weight_ > 0.0 &&
+                    std::abs(dir.first.x) + std::abs(dir.first.y) >= 2) {
+                    bool bridge = false;
+                    // 中间格1: 仅沿 x 方向走到目标列，y 保持当前行
+                    const GridIndex mid1{
+                        current.idx.x + dir.first.x,
+                        current.idx.y,
+                        current.idx.z + dir.first.z};
+                    if (!isTraversableGrid(mid1)) bridge = true;
+                    // 中间格2: 仅沿 y 方向走到目标行，x 保持当前列
+                    const GridIndex mid2{
+                        current.idx.x,
+                        current.idx.y + dir.first.y,
+                        current.idx.z + dir.first.z};
+                    if (!isTraversableGrid(mid2)) bridge = true;
+                    if (bridge) {
+                        tentative_g += diagonal_bridge_weight_;
+                    }
                 }
 
                 if (tentative_g < g_score[nbr_lin]) {

@@ -96,6 +96,17 @@ void OctoPlannerGlobalPlanner::configure(
   const double smoothing_grad_alpha    = node->get_parameter(name + ".smoothing_gradient_alpha").as_double();
   const double smoothing_cost_grad_beta = node->get_parameter(name + ".smoothing_cost_gradient_beta").as_double();
 
+  // A* 方向一致性参数
+  node->declare_parameter(name + ".dir_change_weight", 1.5);
+  node->declare_parameter(name + ".step_dir_change_weight", 2.0);
+  node->declare_parameter(name + ".diagonal_bridge_weight", 5.0);
+  const double dir_change_weight =
+    node->get_parameter(name + ".dir_change_weight").as_double();
+  const double step_dir_change_weight =
+    node->get_parameter(name + ".step_dir_change_weight").as_double();
+  const double diagonal_bridge_weight =
+    node->get_parameter(name + ".diagonal_bridge_weight").as_double();
+
   // ---- build OctoMap from PCD  ----
   RCLCPP_INFO(logger_, "Building OctoMap from %s ...", input_pcd.c_str());
   auto converter = std::make_shared<pcd2octomap::Pcd2OctomapConverter>();
@@ -135,6 +146,11 @@ void OctoPlannerGlobalPlanner::configure(
   planner_->setSmoothingGradientIterations(smoothing_grad_iters);
   planner_->setSmoothingGradientAlpha(smoothing_grad_alpha);
   planner_->setSmoothingCostGradientBeta(smoothing_cost_grad_beta);
+
+  // A* 方向一致性参数
+  planner_->setDirChangeWeight(dir_change_weight);
+  planner_->setStepDirChangeWeight(step_dir_change_weight);
+  planner_->setDiagonalBridgeWeight(diagonal_bridge_weight);
 
   const std::string cache_path =
     (output_bt.empty() ? input_pcd : output_bt) + "_planning_cache";

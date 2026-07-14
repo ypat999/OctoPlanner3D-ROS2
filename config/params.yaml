@@ -3,7 +3,7 @@
     # 输入 PCD 点云文件路径
     # 路径说明：通过global_config或launch参数指定，此处为默认值
     # 实际运行时由 global_config.global_config.OCTOPLANNER_PCD_FILE_PATH 或 launch params_file 参数决定
-    input_pcd: "/home/ywj/slam_data/3d_map/3dmap.pcd"  # 默认路径，可被global_config覆盖
+    input_pcd: "/home/ywj/slam_data/3d_map/1f_down10.pcd"  # 默认路径，可被global_config覆盖
 
     # 输出 .bt 八叉树文件（不填则自动与 PCD 同名，e.g. 3dmap.pcd → 3dmap.bt）
     # output_bt: "result_cleaned.bt"
@@ -93,6 +93,20 @@
     # 只使用最低可通行层（关闭可支持跨楼层导航）
     # 开启此选项可避免路径绕行到较高的地方（如爬楼梯、平台），保持在最低的平坦层
     lowest_traversable_only: false
+
+    # ===== A* 方向一致性参数 =====
+    # 方向变化惩罚权重：A* 扩展时进出方向夹角越大，惩罚越重
+    # 0 = 禁用；增大此值可减少路径中的之字形转弯，让路径更顺滑
+    # 典型值：1.0~3.0；过大会导致路径绕远
+    dir_change_weight: 1.5
+    # 阶跃方向变化额外惩罚：进出方向的 z 分量不一致时（一高一平/一平一高）额外加罚
+    # 用于减少在台阶/阶跃位置走对角线格子的行为，鼓励先直行再爬升/下降
+    # 0 = 禁用；增大此值会让路径在阶跃处更趋向于轴对齐移动
+    step_dir_change_weight: 15.0
+    # 对角线跨越惩罚：xy 平面对角移动时，若中间轴对齐格子在目标 z 层不可通行，
+    # 说明对角格子是噪声"桥梁"（同高但正前/左右低一格），应加罚避免折角路径
+    # 0 = 禁用；值越大越严格地阻止噪声桥接对角移动；典型值 3.0~10.0
+    diagonal_bridge_weight: 5.0
 
     # ===== 路径平滑参数 =====
     # 流程：简化(碰撞感知) -> 约束式梯度平滑(稀疏点) -> 碰撞感知插值
