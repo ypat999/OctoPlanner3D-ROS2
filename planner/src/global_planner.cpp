@@ -274,12 +274,6 @@ namespace global_planner
                         // (1 - dot) / 2 ∈ [0, 1]：0=同向, 0.5=正交, 1=反向
                         const double dir_change = (1.0 - dot) * 0.5;
                         tentative_g += dir_change_weight_ * dir_change;
-
-                        // 阶跃方向变化额外惩罚：
-                        // 进方向有 z 分量但出方向没有，或反之 → 在阶跃处变向
-                        if ((in_dz != 0) != (out_dz != 0)) {
-                            tentative_g += step_dir_change_weight_;
-                        }
                     }
                 }
 

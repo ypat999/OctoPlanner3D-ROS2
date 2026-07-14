@@ -97,13 +97,10 @@ void OctoPlannerGlobalPlanner::configure(
   const double smoothing_cost_grad_beta = node->get_parameter(name + ".smoothing_cost_gradient_beta").as_double();
 
   // A* 方向一致性参数
-  node->declare_parameter(name + ".dir_change_weight", 1.5);
-  node->declare_parameter(name + ".step_dir_change_weight", 2.0);
+  node->declare_parameter(name + ".dir_change_weight", 2.0);
   node->declare_parameter(name + ".diagonal_bridge_weight", 5.0);
   const double dir_change_weight =
     node->get_parameter(name + ".dir_change_weight").as_double();
-  const double step_dir_change_weight =
-    node->get_parameter(name + ".step_dir_change_weight").as_double();
   const double diagonal_bridge_weight =
     node->get_parameter(name + ".diagonal_bridge_weight").as_double();
 
@@ -149,7 +146,6 @@ void OctoPlannerGlobalPlanner::configure(
 
   // A* 方向一致性参数
   planner_->setDirChangeWeight(dir_change_weight);
-  planner_->setStepDirChangeWeight(step_dir_change_weight);
   planner_->setDiagonalBridgeWeight(diagonal_bridge_weight);
 
   const std::string cache_path =

@@ -81,28 +81,26 @@
     # 启用预阻塞代价图（根据 robot_radius 和预阻塞半径计算可通行性）
     enable_preblocked_costmap: true
 
-    # 预阻塞半径（栅格数），影响机器人高度约束
-    # 公式：机器人高度（米） ≈ preblocked_costmap_radius_cells × resolution
-    # 示例：resolution=0.05米时，radius_cells=6 ⇒ 高度0.3米
+    # 预阻塞代价场扩散半径（栅格数），决定障碍物周围 traversable cells 受到的排斥代价范围
+    # 代价值公式：cost = max(0, (radius+1-distance)/(radius+1))，距离障碍越近代价越高
+    # 增大此值可让路径更远离障碍物，但也会增加规划计算量
+    # 典型值：2~5；建议与 robot_radius/resolution 相当或更大
     preblocked_costmap_radius_cells: 2
 
     # 预阻塞代价权重，增加此值会让路径更远离障碍物
     # 增加此值可减少靠近草丛和路沿的行为，路径会保持在更平坦的区域
     preblocked_costmap_weight: 8.0
 
-    # 只使用最低可通行层（关闭可支持跨楼层导航）
-    # 开启此选项可避免路径绕行到较高的地方（如爬楼梯、平台），保持在最低的平坦层
+    # 只使用最低可通行层：开启后在每个 (x,y) 列只保留最低的 traversable 格子
+    # true = 禁止爬楼梯/上平台，路径保持在地面层
+    # false = 允许使用高层可通行格子，支持跨楼层导航
     lowest_traversable_only: false
 
     # ===== A* 方向一致性参数 =====
     # 方向变化惩罚权重：A* 扩展时进出方向夹角越大，惩罚越重
     # 0 = 禁用；增大此值可减少路径中的之字形转弯，让路径更顺滑
-    # 典型值：1.0~3.0；过大会导致路径绕远
-    dir_change_weight: 1.5
-    # 阶跃方向变化额外惩罚：进出方向的 z 分量不一致时（一高一平/一平一高）额外加罚
-    # 用于减少在台阶/阶跃位置走对角线格子的行为，鼓励先直行再爬升/下降
-    # 0 = 禁用；增大此值会让路径在阶跃处更趋向于轴对齐移动
-    step_dir_change_weight: 15.0
+    # 典型值：1.5~3.0；过大会导致路径绕远
+    dir_change_weight: 2.0
     # 对角线跨越惩罚：xy 平面对角移动时，若中间轴对齐格子在目标 z 层不可通行，
     # 说明对角格子是噪声"桥梁"（同高但正前/左右低一格），应加罚避免折角路径
     # 0 = 禁用；值越大越严格地阻止噪声桥接对角移动；典型值 3.0~10.0
@@ -131,7 +129,4 @@
     smoothing_max_step: 0.0
     # z 方向台阶平滑窗口半径，消除栅格离散化导致的楼梯状路径
     # 沿路径做加权滑动平均，越大越平滑但也越接近斜坡附近的 free space 边界
-    smoothing_z_window_radius: 3
-    # z 方向非对称平滑比率：0.0 = 只把低点往上提、高点不变
-    # 1.0 = 对称平滑（高低同等力度），默认 0.3（下行修正 damp 到 30%）
-    smoothing_z_asymmetry_ratio: 0.3
+    smoothing_z_window_radius: 2

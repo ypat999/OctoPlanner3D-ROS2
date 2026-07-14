@@ -153,14 +153,10 @@ public:
       declare_parameter<double>("smoothing_max_step", 0.0);
     const int smoothing_z_window_radius =
       declare_parameter<int>("smoothing_z_window_radius", 3);
-    const double smoothing_z_asymmetry_ratio =
-      declare_parameter<double>("smoothing_z_asymmetry_ratio", 0.3);
 
     // A* 方向一致性参数
     const double dir_change_weight =
-      declare_parameter<double>("dir_change_weight", 1.5);
-    const double step_dir_change_weight =
-      declare_parameter<double>("step_dir_change_weight", 2.0);
+      declare_parameter<double>("dir_change_weight", 2.0);
     const double diagonal_bridge_weight =
       declare_parameter<double>("diagonal_bridge_weight", 5.0);
 
@@ -198,11 +194,9 @@ public:
     planner_->setSmoothingCostTolerance(smoothing_cost_tolerance);
     planner_->setSmoothingMaxStep(smoothing_max_step);
     planner_->setSmoothingZWindowRadius(smoothing_z_window_radius);
-    planner_->setSmoothingZAsymmetryRatio(smoothing_z_asymmetry_ratio);
 
     // 设置 A* 方向一致性参数
     planner_->setDirChangeWeight(dir_change_weight);
-    planner_->setStepDirChangeWeight(step_dir_change_weight);
     planner_->setDiagonalBridgeWeight(diagonal_bridge_weight);
 
     // ===== 参数运行时修改回调（支持 ros2 param set 实时调整） =====
@@ -230,9 +224,7 @@ public:
           else if (name == "smoothing_cost_tolerance") planner_->setSmoothingCostTolerance(p.as_double());
           else if (name == "smoothing_max_step") planner_->setSmoothingMaxStep(p.as_double());
           else if (name == "smoothing_z_window_radius") planner_->setSmoothingZWindowRadius(p.as_int());
-          else if (name == "smoothing_z_asymmetry_ratio") planner_->setSmoothingZAsymmetryRatio(p.as_double());
           else if (name == "dir_change_weight") planner_->setDirChangeWeight(p.as_double());
-          else if (name == "step_dir_change_weight") planner_->setStepDirChangeWeight(p.as_double());
           else if (name == "diagonal_bridge_weight") planner_->setDiagonalBridgeWeight(p.as_double());
         }
         rcl_interfaces::msg::SetParametersResult result;
