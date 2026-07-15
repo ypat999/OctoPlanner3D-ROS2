@@ -9,6 +9,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -130,6 +131,9 @@ public:
   void makePlan(const PointPose start,const PointPose goal);
 
   void getPlannerResults(std::vector<PointPose>& plannerResults);
+
+  /** 获取可通行层 cost 云数据：每个可通行格子的世界坐标(x,y,z) + cost 值 */
+  void getCostCloud(std::vector<std::array<double, 4>> & cloud) const;
 
 private:
 

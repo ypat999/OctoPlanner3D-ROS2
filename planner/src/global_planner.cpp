@@ -1501,6 +1501,17 @@ namespace global_planner
         return preblocked_cost_grid_[gridLinear(idx)];
     }
 
+    void GlobalPlanner::getCostCloud(std::vector<std::array<double, 4>> & cloud) const
+    {
+        cloud.clear();
+        cloud.reserve(traversable_cells_.size());
+        for (const auto & idx : traversable_cells_) {
+            const auto pt = gridToWorld(idx);
+            const double cost = getPreblockedCostGrid(idx);
+            cloud.push_back({pt.x(), pt.y(), pt.z(), cost});
+        }
+    }
+
     void GlobalPlanner::simplifyPath(std::vector<PointPose> & path, double epsilon) const
     {
         if (path.size() < 3) return;

@@ -285,6 +285,8 @@ public:
     map_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("occupied_map", transient_qos);
     map_cloud_pub_ =
       create_publisher<sensor_msgs::msg::PointCloud2>("occupied_map_cloud", transient_qos);
+    cost_cloud_pub_ =
+      create_publisher<sensor_msgs::msg::PointCloud2>("cost_map_cloud", transient_qos);
 
     // 导航路径发布器（用于Nav2执行）
     path_pub_ = create_publisher<nav_msgs::msg::Path>(planned_path_topic_, transient_qos);
@@ -524,6 +526,7 @@ private:
     }
 
     publishNavPath(path);
+    publishCostCloud();
     RCLCPP_INFO(get_logger(), "[Nav Mode] Published nav path with %zu poses (%.2f s).",
                 path.size(), plan_elapsed);
   }
@@ -552,6 +555,7 @@ private:
     }
 
     publishTestPath(path);
+    publishCostCloud();
     RCLCPP_INFO(get_logger(), "[Test Mode] Published test path with %zu poses (%.2f s).", path.size(), plan_elapsed);
   }
 
@@ -816,7 +820,7 @@ private:
       cloud_msg.is_bigendian = false;
       cloud_msg.is_dense = true;
 
-      cloud_msg.fields.resize(3);
+      cloud_msg.fields.resize(4);
       cloud_msg.fields[0].name = "x";
       cloud_msg.fields[0].offset = 0;
       cloud_msg.fields[0].datatype = sensor_msgs::msg::PointField::FLOAT32;
@@ -829,8 +833,12 @@ private:
       cloud_msg.fields[2].offset = 8;
       cloud_msg.fields[2].datatype = sensor_msgs::msg::PointField::FLOAT32;
       cloud_msg.fields[2].count = 1;
+      cloud_msg.fields[3].name = "intensity";
+      cloud_msg.fields[3].offset = 12;
+      cloud_msg.fields[3].datatype = sensor_msgs::msg::PointField::FLOAT32;
+      cloud_msg.fields[3].count = 1;
 
-      cloud_msg.point_step = 12;
+      cloud_msg.point_step = 16;
       cloud_msg.row_step = cloud_msg.point_step * cloud_msg.width;
       cloud_msg.data.resize(cloud_msg.row_step);
 
@@ -838,11 +846,14 @@ private:
         sensor_msgs::PointCloud2Iterator<float> iter_x(cloud_msg, "x");
         sensor_msgs::PointCloud2Iterator<float> iter_y(cloud_msg, "y");
         sensor_msgs::PointCloud2Iterator<float> iter_z(cloud_msg, "z");
+        sensor_msgs::PointCloud2Iterator<float> iter_i(cloud_msg, "intensity");
         for (const auto & pt : cloud_points) {
           *iter_x = static_cast<float>(pt.x);
           *iter_y = static_cast<float>(pt.y);
           *iter_z = static_cast<float>(pt.z);
-          ++iter_x; ++iter_y; ++iter_z;
+          // occupied voxel: intensity=1.0 表示不可通行
+          *iter_i = 1.0f;
+          ++iter_x; ++iter_y; ++iter_z; ++iter_i;
         }
       }
 
@@ -867,6 +878,61 @@ private:
     }
     const float k = static_cast<float>((t - 0.66) / 0.34);
     return makeColor(0.95F, 0.90F - 0.45F * k, 0.15F + 0.05F * k, alpha);
+  }
+
+  // ===== Cost 云发布 =====
+  void publishCostCloud()
+  {
+    if (!planner_ || !cost_cloud_pub_) return;
+
+    std::vector<std::array<double, 4>> cost_cloud;
+    planner_->getCostCloud(cost_cloud);
+    if (cost_cloud.empty()) return;
+
+    sensor_msgs::msg::PointCloud2 cloud_msg;
+    cloud_msg.header.frame_id = frame_id_;
+    cloud_msg.header.stamp = now();
+    cloud_msg.height = 1;
+    cloud_msg.width = static_cast<uint32_t>(cost_cloud.size());
+    cloud_msg.is_bigendian = false;
+    cloud_msg.is_dense = true;
+
+    cloud_msg.fields.resize(4);
+    cloud_msg.fields[0].name = "x";
+    cloud_msg.fields[0].offset = 0;
+    cloud_msg.fields[0].datatype = sensor_msgs::msg::PointField::FLOAT32;
+    cloud_msg.fields[0].count = 1;
+    cloud_msg.fields[1].name = "y";
+    cloud_msg.fields[1].offset = 4;
+    cloud_msg.fields[1].datatype = sensor_msgs::msg::PointField::FLOAT32;
+    cloud_msg.fields[1].count = 1;
+    cloud_msg.fields[2].name = "z";
+    cloud_msg.fields[2].offset = 8;
+    cloud_msg.fields[2].datatype = sensor_msgs::msg::PointField::FLOAT32;
+    cloud_msg.fields[2].count = 1;
+    cloud_msg.fields[3].name = "intensity";
+    cloud_msg.fields[3].offset = 12;
+    cloud_msg.fields[3].datatype = sensor_msgs::msg::PointField::FLOAT32;
+    cloud_msg.fields[3].count = 1;
+
+    cloud_msg.point_step = 16;
+    cloud_msg.row_step = cloud_msg.point_step * cloud_msg.width;
+    cloud_msg.data.resize(cloud_msg.row_step);
+
+    sensor_msgs::PointCloud2Iterator<float> iter_x(cloud_msg, "x");
+    sensor_msgs::PointCloud2Iterator<float> iter_y(cloud_msg, "y");
+    sensor_msgs::PointCloud2Iterator<float> iter_z(cloud_msg, "z");
+    sensor_msgs::PointCloud2Iterator<float> iter_i(cloud_msg, "intensity");
+    for (const auto & pt : cost_cloud) {
+      *iter_x = static_cast<float>(pt[0]);
+      *iter_y = static_cast<float>(pt[1]);
+      *iter_z = static_cast<float>(pt[2]);
+      *iter_i = static_cast<float>(pt[3]);
+      ++iter_x; ++iter_y; ++iter_z; ++iter_i;
+    }
+
+    cost_cloud_pub_->publish(cloud_msg);
+    RCLCPP_INFO(get_logger(), "Published cost cloud with %zu points.", cost_cloud.size());
   }
 
   // ===== 导航路径发布 =====
@@ -1095,6 +1161,7 @@ private:
   // 地图可视化发布器
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr map_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_cloud_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cost_cloud_pub_;
 
   // 订阅器
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr start_sub_;
