@@ -8,8 +8,12 @@
  */
 #pragma once
 
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -101,9 +105,35 @@ public:
   void setPreblockedCostmapWeight(double weight) { preblocked_costmap_weight_ = weight; }
   void setLowestTraversableOnly(bool enable) { lowest_traversable_only_ = enable; }
 
+  // ===== 路径平滑参数 =====
+  void setSmoothingEnabled(bool enable) { smoothing_enabled_ = enable; }
+  void setSmoothingSimplifyEpsilon(double eps) { smoothing_simplify_epsilon_ = eps; }
+  void setSmoothingInterpSpacing(double spacing) { smoothing_interp_spacing_ = spacing; }
+  void setSmoothingGradientIterations(int iters) { smoothing_gradient_iters_ = iters; }
+  void setSmoothingGradientAlpha(double alpha) { smoothing_gradient_alpha_ = alpha; }
+  void setSmoothingCostGradientBeta(double beta) { smoothing_cost_gradient_beta_ = beta; }
+  void setSmoothingCostTolerance(double tol) { smoothing_cost_tolerance_ = tol; }
+  void setSmoothingMaxStep(double step) { smoothing_max_step_ = step; }
+  void setSmoothingZWindowRadius(int r) { smoothing_z_window_radius_ = r; }
+
+  // ===== A* 方向一致性参数 =====
+  /** 设置方向变化惩罚权重：进/出方向夹角越大，惩罚越重（0=禁用）
+   *  用于减少 A* 在阶跃位置走对角线格子导致的局部曲率过大 */
+  void setDirChangeWeight(double w) { dir_change_weight_ = w; }
+  /** 设置对角线跨越惩罚：xy 平面对角移动时，若中间轴对齐格子在目标 z 层不可通行，
+   *  说明该对角格子是噪声"桥梁"，用于绕过高度变化（0=禁用）
+   *  典型场景：斜对角 cell 与本 cell 同高，但正前/左右 cell 低一格 */
+  void setDiagonalBridgeWeight(double w) { diagonal_bridge_weight_ = w; }
+
+  /** 对规划结果执行路径平滑 */
+  void smoothPath();
+
   void makePlan(const PointPose start,const PointPose goal);
 
   void getPlannerResults(std::vector<PointPose>& plannerResults);
+
+  /** 获取可通行层 cost 云数据：每个可通行格子的世界坐标(x,y,z) + cost 值 */
+  void getCostCloud(std::vector<std::array<double, 4>> & cloud) const;
 
 private:
 
@@ -187,6 +217,26 @@ private:
     const std::unordered_map<GridIndex, GridIndex, GridIndexHash> & came_from,
     GridIndex current) const;
 
+  // ===== 路径平滑实现 =====
+  /** 简化路径：去除共线/近似共线的冗余点（仅当跳过点后的弦仍可通行时才跳过） */
+  void simplifyPath(std::vector<PointPose> & path, double epsilon) const;
+  /** 碰撞感知的 Catmull-Rom 样条插值：曲线若离开安全走廊则回退到线性插值 */
+  void interpolatePath(const std::vector<PointPose> & input, std::vector<PointPose> & output, double spacing) const;
+  /** 代价场梯度平滑：拉普拉斯平滑力 + (−∇cost) 排斥力，O(1) 代价门控接受；
+   *  迭代中不做碰撞检查；末尾做一次线段安全验证并回退 */
+  void gradientDescentSmooth(std::vector<PointPose> & path, int max_iters, double alpha, double beta) const;
+
+  /**
+   * @brief z 方向台阶平滑：沿路径做加权滑动平均，消除栅格离散化导致的楼梯状路径
+   * @param path 路径点（原地修改）
+   * @param window_radius 滑动窗口半径（每侧邻居数）
+   */
+  void smoothZStairSteps(std::vector<PointPose> & path, int window_radius) const;
+  /** 线段碰撞检查：用 3D DDA 遍历线段穿过的所有体素，任一体素不可通行则返回 false */
+  bool isSegmentTraversable(const PointPose & a, const PointPose & b) const;
+  /** 代价场查询（供平滑优化）：非可通行/越界格返回 1.0，可通行格返回预阻塞代价 */
+  double costFieldAt(const GridIndex & idx) const;
+
   bool startPlan();
 
   void publishPath(
@@ -217,6 +267,21 @@ private:
   int preblocked_costmap_radius_cells_ = 3;
   double preblocked_costmap_weight_ = 2.5;
   bool lowest_traversable_only_ = false;
+
+  // ===== 平滑参数 =====
+  bool smoothing_enabled_ = true;
+  double smoothing_simplify_epsilon_ = 0.1;      // 简化容忍度（米）
+  double smoothing_interp_spacing_ = 0.15;        // 插值点间距（米）
+  int smoothing_gradient_iters_ = 50;             // 梯度下降迭代次数
+  double smoothing_gradient_alpha_ = 0.3;         // 拉普拉斯平滑步长
+  double smoothing_cost_gradient_beta_ = 0.2;     // cost 场梯度排斥步长
+  double smoothing_cost_tolerance_ = 0.1;          // 代价门控容差，允许沿等代价线微调
+  double smoothing_max_step_ = 0.0;                // 单步位移上限（0=auto=res*0.5）
+  int smoothing_z_window_radius_ = 3;              // z 台阶平滑窗口半径
+
+  // ===== A* 方向一致性参数 =====
+  double dir_change_weight_ = 1.5;           // 方向变化惩罚权重（0=禁用）
+  double diagonal_bridge_weight_ = 5.0;      // 对角线跨越惩罚（0=禁用）
 
   bool map_ready_ = false;
   bool has_start_ = false;

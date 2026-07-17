@@ -227,7 +227,7 @@ namespace global_planner
                 next_log_iter = iters + log_interval;
             }
 
-            for (const auto & dir : directions) 
+            for (const auto & dir : directions)
             {
                 GridIndex nbr{current.idx.x + dir.first.x, current.idx.y + dir.first.y, current.idx.z + dir.first.z};
 
@@ -243,6 +243,61 @@ namespace global_planner
                 double tentative_g = current.g + dir.second;
                 if (enable_preblocked_costmap) {
                     tentative_g += preblocked_costmap_weight * getPreblockedCostGrid(nbr);
+                }
+
+                // 方向一致性惩罚：减少在阶跃位置斜向变向，鼓励沿路径方向直行
+                if (came_from[cur_lin] >= 0) {
+                    // 从 came_from 恢复父节点 GridIndex
+                    const int64_t parent_lin = came_from[cur_lin];
+                    const int64_t pz = parent_lin % grid_dim_z_;
+                    const int64_t prem = parent_lin / grid_dim_z_;
+                    const int64_t py = prem % grid_dim_y_;
+                    const int64_t px = prem / grid_dim_y_;
+                    const GridIndex parent{
+                        static_cast<int>(px + grid_min_.x),
+                        static_cast<int>(py + grid_min_.y),
+                        static_cast<int>(pz + grid_min_.z)};
+
+                    // 进方向 (parent → current) 和出方向 (current → nbr)
+                    const int in_dx = current.idx.x - parent.x;
+                    const int in_dy = current.idx.y - parent.y;
+                    const int in_dz = current.idx.z - parent.z;
+                    const int out_dx = dir.first.x;
+                    const int out_dy = dir.first.y;
+                    const int out_dz = dir.first.z;
+
+                    // 归一化点积 → cos(angle)，用于衡量方向变化
+                    const double in_len = std::sqrt(static_cast<double>(in_dx * in_dx + in_dy * in_dy + in_dz * in_dz));
+                    const double out_len = dir.second;
+                    if (in_len > 1e-6 && out_len > 1e-6) {
+                        const double dot = (in_dx * out_dx + in_dy * out_dy + in_dz * out_dz) / (in_len * out_len);
+                        // (1 - dot) / 2 ∈ [0, 1]：0=同向, 0.5=正交, 1=反向
+                        const double dir_change = (1.0 - dot) * 0.5;
+                        tentative_g += dir_change_weight_ * dir_change;
+                    }
+                }
+
+                // 对角线跨越惩罚：xy 平面对角移动时，检查中间轴对齐格子
+                // 若中间格子在目标 z 层不可通行，说明对角格子是噪声"桥梁"
+                // 用于绕过高度变化，应加罚以避免折角路径
+                if (diagonal_bridge_weight_ > 0.0 &&
+                    std::abs(dir.first.x) + std::abs(dir.first.y) >= 2) {
+                    bool bridge = false;
+                    // 中间格1: 仅沿 x 方向走到目标列，y 保持当前行
+                    const GridIndex mid1{
+                        current.idx.x + dir.first.x,
+                        current.idx.y,
+                        current.idx.z + dir.first.z};
+                    if (!isTraversableGrid(mid1)) bridge = true;
+                    // 中间格2: 仅沿 y 方向走到目标行，x 保持当前列
+                    const GridIndex mid2{
+                        current.idx.x,
+                        current.idx.y + dir.first.y,
+                        current.idx.z + dir.first.z};
+                    if (!isTraversableGrid(mid2)) bridge = true;
+                    if (bridge) {
+                        tentative_g += diagonal_bridge_weight_;
+                    }
                 }
 
                 if (tentative_g < g_score[nbr_lin]) {
@@ -698,7 +753,18 @@ namespace global_planner
 
             std::vector<GridIndex> local_results;
 
+            // 先用 occupancy cache 快速定位第一个非占据 z 层（即地面以上），
+            // 跳过大段地下岩层，避免对每个 z 都做昂贵的 isCellTraversable。
+            int first_free_z = max_idx.z + 1;
             for (int z = min_idx.z; z <= max_idx.z; ++z) {
+                if (!isOccupiedCell(GridIndex{x, y, z})) {
+                    first_free_z = z;
+                    break;
+                }
+            }
+
+            // 从第一个 free cell 开始检查 traversability
+            for (int z = first_free_z; z <= max_idx.z; ++z) {
                 const GridIndex idx{x, y, z};
                 if (!isInsideMetricBounds(idx) || isOccupiedCell(idx)) {
                     continue;
@@ -779,6 +845,19 @@ namespace global_planner
             }
         }
 
+        // 让代价场成为完整的“障碍接近度”场：非可通行格（障碍/膨胀壳）设为最高代价 1.0。
+        // 此前这些格 cost=0（未赋值），会导致边界处 −∇cost 指向障碍（反方向）。
+        // 修正后：障碍=1.0、近障碍可通行=[0.25,0.75]、远障碍=0，−∇cost 始终远离障碍，
+        // 可供平滑优化直接做梯度下降，无需逐次迭代碰撞检查。
+        // 说明：A* 仅在 isTraversableGrid(nbr) 为真时查询 cost（见 startPlan），故不受影响。
+        const int nt_bt = (num_threads_ > 0) ? num_threads_ : 0;
+#pragma omp parallel for num_threads(nt_bt) schedule(static) if(nt_bt != 1)
+        for (int64_t lin = 0; lin < grid_size; ++lin) {
+            if (!traversable_grid_[lin]) {
+                preblocked_cost_grid_[lin] = 1.0;
+            }
+        }
+
         std::cout << "  Traversable grid: built " << grid_dim_x_ << "x" << grid_dim_y_ << "x" << grid_dim_z_
                   << " = " << grid_size << " cells in "
                   << ((clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC)) << " s" << std::endl;
@@ -817,14 +896,45 @@ namespace global_planner
             return;
         }
         const clock_t build_start = clock();
-        occupancy_cache_.reserve(octree_->getNumLeafNodes());
+
+        size_t occupied_leaves = 0, expanded_cells = 0;
+
+        const double res = octree_->getResolution();
+        const double eps = res * 1e-6;
+
         for (auto it = octree_->begin_leafs(); it != octree_->end_leafs(); ++it) {
-            if (octree_->isNodeOccupied(*it)) {
-                occupancy_cache_.insert(worldToGrid(it.getX(), it.getY(), it.getZ()));
+            if (!octree_->isNodeOccupied(*it)) continue;
+            ++occupied_leaves;
+
+            double size = it.getSize();
+            if (size <= res * 1.01) {
+                // 细叶子：直接映射单个格子
+                GridIndex gi = worldToGrid(it.getX(), it.getY(), it.getZ());
+                occupancy_cache_.insert(gi);
+            } else {
+                // 粗叶子：展开为全部被覆盖的细格子
+                double half = size * 0.5;
+                double cx = it.getX(), cy = it.getY(), cz = it.getZ();
+                GridIndex lo = worldToGrid(cx - half + eps, cy - half + eps, cz - half + eps);
+                GridIndex hi = worldToGrid(cx + half - eps, cy + half - eps, cz + half - eps);
+                for (int gx = lo.x; gx <= hi.x; ++gx) {
+                    for (int gy = lo.y; gy <= hi.y; ++gy) {
+                        for (int gz = lo.z; gz <= hi.z; ++gz) {
+                            GridIndex gi{gx, gy, gz};
+                            occupancy_cache_.insert(gi);
+                            ++expanded_cells;
+                        }
+                    }
+                }
             }
         }
-        std::cout << "  Occupancy cache: built " << occupancy_cache_.size()
-                  << " cells from " << octree_->getNumLeafNodes() << " leaf nodes in "
+
+        std::cout << "  Occupancy cache: " << occupied_leaves << " occupied leaves, "
+                  << occupancy_cache_.size() << " grid cells";
+        if (expanded_cells > 0) {
+            std::cout << " (" << expanded_cells << " from coarse leaf expansion)";
+        }
+        std::cout << " in "
                   << ((clock() - build_start) / static_cast<double>(CLOCKS_PER_SEC))
                   << " s" << std::endl;
     }
@@ -1067,6 +1177,7 @@ namespace global_planner
         }
 
         std::cout << "GlobalPlanner: planning cache not found, rebuilding..." << std::endl;
+        buildOccupancyCache();
         rebuildPreblockedCells();
         rebuildDerivedLayers();
         rebuildPreblockedCostmap();
@@ -1240,9 +1351,456 @@ namespace global_planner
     // publishRiskCostCloud();
 
 
+    // ============================================================================
+    // Path Smoothing Implementation
+    // ============================================================================
 
+    void GlobalPlanner::smoothPath()
+    {
+        if (!smoothing_enabled_ || planner_results_.size() < 3) {
+            return;
+        }
 
+        simplifyPath(planner_results_, smoothing_simplify_epsilon_);
+        if (planner_results_.size() < 2) return;
 
+        smoothZStairSteps(planner_results_, smoothing_z_window_radius_);
 
+        constexpr size_t MIN_GRADIENT_POINTS = 8;
+        if (planner_results_.size() >= MIN_GRADIENT_POINTS) {
+            gradientDescentSmooth(
+                planner_results_, smoothing_gradient_iters_,
+                smoothing_gradient_alpha_, smoothing_cost_gradient_beta_);
+        }
+
+        std::vector<PointPose> interp;
+        interpolatePath(planner_results_, interp, smoothing_interp_spacing_);
+        planner_results_ = std::move(interp);
+    }
+
+    // ============================================================================
+    // z 方向台阶平滑：消除 3D 栅格离散化导致的楼梯状路径
+    // ============================================================================
+    void GlobalPlanner::smoothZStairSteps(
+        std::vector<PointPose> & path,
+        int window_radius) const
+    {
+        if (path.size() < 3 || window_radius < 1) return;
+
+        const double res = octree_ ? octree_->getResolution() : 0.5;
+        std::vector<PointPose> smoothed = path;
+
+        for (size_t i = 1; i + 1 < path.size(); ++i) {
+            // 加权滑动平均：离 i 越近的邻居权重越大（三角权重）
+            double z_sum = 0.0;
+            double weight_sum = 0.0;
+            for (int k = -window_radius; k <= window_radius; ++k) {
+                int j = static_cast<int>(i) + k;
+                if (j < 0 || j >= static_cast<int>(path.size())) continue;
+                double w = window_radius + 1.0 - std::abs(k);  // 三角权重
+                z_sum += w * path[j].z;
+                weight_sum += w;
+            }
+            double z_smooth = z_sum / weight_sum;
+
+            // 约束：z 位移不超过 ±res（保持在原栅格或相邻栅格，确保安全）
+            const double z_min = path[i].z - res;
+            const double z_max = path[i].z + res;
+            smoothed[i].z = std::clamp(z_smooth, z_min, z_max);
+
+            // 验证新 z 所在体素是否可通行
+            const GridIndex gi = worldToGrid(smoothed[i].x, smoothed[i].y, smoothed[i].z);
+            if (!isTraversableGrid(gi)) {
+                smoothed[i].z = path[i].z;  // 回退
+            }
+        }
+
+        // 逐段 DDA 验证，z 平滑后个别段可能穿障，不安全则对该段两点回退 z
+        for (size_t i = 1; i < path.size(); ++i) {
+            if (!isSegmentTraversable(smoothed[i - 1], smoothed[i])) {
+                smoothed[i].z = path[i].z;
+                smoothed[i - 1].z = path[i - 1].z;
+            }
+        }
+
+        path = std::move(smoothed);
+    }
+
+    bool GlobalPlanner::isSegmentTraversable(const PointPose & a, const PointPose & b) const
+    {
+        if (!octree_) return true;
+        const double res = octree_->getResolution();
+
+        const GridIndex ia = worldToGrid(a.x, a.y, a.z);
+        const GridIndex ib = worldToGrid(b.x, b.y, b.z);
+
+        // 端点本身必须可通行（traversable_grid_ 已含 robot_radius 膨胀）
+        if (!isTraversableGrid(ia) || !isTraversableGrid(ib)) {
+            return false;
+        }
+        if (ia.x == ib.x && ia.y == ib.y && ia.z == ib.z) {
+            return true;
+        }
+
+        // Amanatides-Woo 3D DDA：逐体素遍历线段穿过的所有栅格
+        int x = ia.x, y = ia.y, z = ia.z;
+        const int stepX = (ib.x > ia.x) ? 1 : (ib.x < ia.x ? -1 : 0);
+        const int stepY = (ib.y > ia.y) ? 1 : (ib.y < ia.y ? -1 : 0);
+        const int stepZ = (ib.z > ia.z) ? 1 : (ib.z < ia.z ? -1 : 0);
+
+        const double dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+        const double inf = std::numeric_limits<double>::infinity();
+
+        double tMaxX, tMaxY, tMaxZ;
+        if (stepX > 0)      tMaxX = (static_cast<double>(x + 1) * res - a.x) / dx;
+        else if (stepX < 0) tMaxX = (static_cast<double>(x) * res - a.x) / dx;
+        else                tMaxX = inf;
+        if (stepY > 0)      tMaxY = (static_cast<double>(y + 1) * res - a.y) / dy;
+        else if (stepY < 0) tMaxY = (static_cast<double>(y) * res - a.y) / dy;
+        else                tMaxY = inf;
+        if (stepZ > 0)      tMaxZ = (static_cast<double>(z + 1) * res - a.z) / dz;
+        else if (stepZ < 0) tMaxZ = (static_cast<double>(z) * res - a.z) / dz;
+        else                tMaxZ = inf;
+
+        const double tDeltaX = (stepX != 0) ? res / std::fabs(dx) : inf;
+        const double tDeltaY = (stepY != 0) ? res / std::fabs(dy) : inf;
+        const double tDeltaZ = (stepZ != 0) ? res / std::fabs(dz) : inf;
+
+        // 最大步数 = 各轴跨格数之和 + 2，防止极端浮点误差下死循环
+        const int max_steps =
+            std::abs(ib.x - ia.x) + std::abs(ib.y - ia.y) + std::abs(ib.z - ia.z) + 2;
+
+        for (int step = 0; step < max_steps; ++step) {
+            if (tMaxX < tMaxY) {
+                if (tMaxX < tMaxZ) { x += stepX; tMaxX += tDeltaX; }
+                else               { z += stepZ; tMaxZ += tDeltaZ; }
+            } else {
+                if (tMaxY < tMaxZ) { y += stepY; tMaxY += tDeltaY; }
+                else               { z += stepZ; tMaxZ += tDeltaZ; }
+            }
+            if (!isTraversableGrid(GridIndex{x, y, z})) {
+                return false;
+            }
+            if (x == ib.x && y == ib.y && z == ib.z) {
+                break;
+            }
+        }
+        return true;
+    }
+
+    double GlobalPlanner::costFieldAt(const GridIndex & idx) const
+    {
+        // 越界视为最高代价（保守，避免规划贴地图边缘）
+        if (idx.x < grid_min_.x || idx.x > grid_max_.x ||
+            idx.y < grid_min_.y || idx.y > grid_max_.y ||
+            idx.z < grid_min_.z || idx.z > grid_max_.z) {
+            return 1.0;
+        }
+        // buildTraversableGrid 已将非可通行格的 cost 置为 1.0，
+        // 可通行格返回其预阻塞代价（远障碍=0，近障碍=[0.25,0.75]）
+        return preblocked_cost_grid_[gridLinear(idx)];
+    }
+
+    void GlobalPlanner::getCostCloud(std::vector<std::array<double, 4>> & cloud) const
+    {
+        cloud.clear();
+        cloud.reserve(traversable_cells_.size());
+        for (const auto & idx : traversable_cells_) {
+            const auto pt = gridToWorld(idx);
+            const double cost = getPreblockedCostGrid(idx);
+            cloud.push_back({pt.x(), pt.y(), pt.z(), cost});
+        }
+    }
+
+    void GlobalPlanner::simplifyPath(std::vector<PointPose> & path, double epsilon) const
+    {
+        if (path.size() < 3) return;
+        const double eps_sq = epsilon * epsilon;
+
+        std::vector<PointPose> result;
+        result.reserve(path.size());
+        result.push_back(path.front());
+
+        for (size_t i = 1; i + 1 < path.size(); ++i) {
+            const auto & prev = result.back();  // 上一个被保留的点
+            const auto & cur  = path[i];
+            const auto & next = path[i + 1];
+
+            // 计算 cur 到直线 prev->next 的距离平方
+            const double dx = next.x - prev.x;
+            const double dy = next.y - prev.y;
+            const double dz = next.z - prev.z;
+            const double len_sq = dx * dx + dy * dy + dz * dz;
+            double dist_sq;
+            if (len_sq < 1e-12) {
+                dist_sq = (cur.x - prev.x) * (cur.x - prev.x) +
+                          (cur.y - prev.y) * (cur.y - prev.y) +
+                          (cur.z - prev.z) * (cur.z - prev.z);
+            } else {
+                const double t = ((cur.x - prev.x) * dx + (cur.y - prev.y) * dy +
+                                  (cur.z - prev.z) * dz) / len_sq;
+                const double tc = (t < 0.0) ? 0.0 : (t > 1.0 ? 1.0 : t);
+                const double proj_x = prev.x + tc * dx;
+                const double proj_y = prev.y + tc * dy;
+                const double proj_z = prev.z + tc * dz;
+                dist_sq = (cur.x - proj_x) * (cur.x - proj_x) +
+                          (cur.y - proj_y) * (cur.y - proj_y) +
+                          (cur.z - proj_z) * (cur.z - proj_z);
+            }
+
+            // 仅当 cur 近似共线（dist <= epsilon）且跳过 cur 后的弦 prev->next
+            // 仍可通行时，才跳过 cur。这保证简化后的每段都无碰撞，避免切角穿障。
+            if (dist_sq <= eps_sq && isSegmentTraversable(prev, next)) {
+                continue;
+            }
+            result.push_back(cur);
+        }
+        result.push_back(path.back());
+
+        if (result.size() < path.size()) {
+            path = std::move(result);
+        }
+    }
+
+    void GlobalPlanner::interpolatePath(
+        const std::vector<PointPose> & input,
+        std::vector<PointPose> & output,
+        double spacing) const
+    {
+        output.clear();
+        if (input.size() < 2) {
+            if (input.size() == 1) output = input;
+            return;
+        }
+
+        const double res = octree_ ? octree_->getResolution() : 0.5;
+        const double step = std::max(spacing, res * 0.1);
+
+        // 辅助：两点间距离
+        auto chord_len = [](const PointPose & a, const PointPose & b) -> double {
+            const double dx = a.x - b.x;
+            const double dy = a.y - b.y;
+            const double dz = a.z - b.z;
+            return std::sqrt(dx * dx + dy * dy + dz * dz);
+        };
+
+        // 辅助：centripetal Catmull-Rom 插值（alpha=0.5，减少 overshoot）
+        // 使用 Barry-Goldman 递归求值，支持非均匀参数化
+        auto centripetal_catmull_rom = [&chord_len](
+            const PointPose & p0, const PointPose & p1,
+            const PointPose & p2, const PointPose & p3, double t) -> PointPose {
+            const double alpha = 0.5; // centripetal
+            double t0 = 0.0;
+            double t1 = t0 + std::pow(chord_len(p0, p1), alpha);
+            double t2 = t1 + std::pow(chord_len(p1, p2), alpha);
+            double t3 = t2 + std::pow(chord_len(p2, p3), alpha);
+            // 避免除零
+            if (t2 - t1 < 1e-12) {
+                return p1;
+            }
+            const double u = t1 + (t2 - t1) * t; // 映射到 [t1, t2]
+
+            auto lerp = [](const PointPose & a, const PointPose & b,
+                           double ta, double tb, double t_cur) -> PointPose {
+                if (std::abs(tb - ta) < 1e-12) return a;
+                const double w = (t_cur - ta) / (tb - ta);
+                PointPose r;
+                r.x = a.x + (b.x - a.x) * w;
+                r.y = a.y + (b.y - a.y) * w;
+                r.z = a.z + (b.z - a.z) * w;
+                return r;
+            };
+
+            const PointPose A1 = lerp(p0, p1, t0, t1, u);
+            const PointPose A2 = lerp(p1, p2, t1, t2, u);
+            const PointPose A3 = lerp(p2, p3, t2, t3, u);
+            const PointPose B1 = lerp(A1, A2, t0, t2, u);
+            const PointPose B2 = lerp(A2, A3, t1, t3, u);
+            return lerp(B1, B2, t1, t2, u);
+        };
+
+        output.reserve(static_cast<size_t>(input.size() * 4));
+        output.push_back(input.front());
+
+        for (size_t i = 0; i + 1 < input.size(); ++i) {
+            const auto & p0 = (i == 0) ? input[0] : input[i - 1];
+            const auto & p1 = input[i];
+            const auto & p2 = input[i + 1];
+            const auto & p3 = (i + 2 < input.size()) ? input[i + 2] : input[i + 1];
+
+            const double seg_len = chord_len(p1, p2);
+            const int num_steps = std::max(1, static_cast<int>(seg_len / step));
+            const double inv_steps = 1.0 / static_cast<double>(num_steps);
+
+            // 先用 Catmull-Rom 生成候选点
+            std::vector<PointPose> cand;
+            cand.reserve(num_steps);
+            for (int j = 1; j <= num_steps; ++j) {
+                const double t = static_cast<double>(j) * inv_steps;
+                cand.push_back(centripetal_catmull_rom(p0, p1, p2, p3, t));
+            }
+
+            // 逐段碰撞检查：Catmull-Rom 在折角处可能外凸离开安全走廊，
+            // 若任一子段穿障，则该段整体回退到线性插值。
+            // 线性插值沿 p1->p2，而该线段已由平滑阶段保证可通行，故必然安全。
+            bool catmull_safe = true;
+            PointPose prev = p1;
+            for (const auto & c : cand) {
+                if (!isSegmentTraversable(prev, c)) {
+                    catmull_safe = false;
+                    break;
+                }
+                prev = c;
+            }
+
+            if (catmull_safe) {
+                for (const auto & c : cand) output.push_back(c);
+            } else {
+                for (int j = 1; j <= num_steps; ++j) {
+                    const double t = static_cast<double>(j) * inv_steps;
+                    PointPose pt;
+                    pt.x = p1.x + (p2.x - p1.x) * t;
+                    pt.y = p1.y + (p2.y - p1.y) * t;
+                    pt.z = p1.z + (p2.z - p1.z) * t;
+                    output.push_back(pt);
+                }
+            }
+        }
+    }
+
+    void GlobalPlanner::gradientDescentSmooth(
+        std::vector<PointPose> & path,
+        int max_iters,
+        double alpha,
+        double beta) const
+    {
+        if (path.size() < 3) return;
+
+        const double res = octree_ ? octree_->getResolution() : 0.5;
+        // 每步位移上限，防止拐角处大幅跳跃（0=auto=半栅格）
+        const double max_step = (smoothing_max_step_ > 0.0) ? smoothing_max_step_ : (res * 0.5);
+        // 代价门控容差：允许沿等代价线微调（容许小幅 uphill 以便拐角圆化），
+        // 但禁止明显向障碍靠近，从源头阻止拉普拉斯把点拉向墙
+        const double cost_tol = smoothing_cost_tolerance_;
+
+        // 保留简化后路径用于末尾安全回退（简化阶段已保证每段可通行）
+        const std::vector<PointPose> original = path;
+
+        for (int iter = 0; iter < max_iters; ++iter) {
+            // 迭代衰减：sqrt(1−t) 衰减曲线比线性更平缓
+            const double t = static_cast<double>(iter) / max_iters;
+            const double decay = std::sqrt(1.0 - t);
+            const double alpha_eff = alpha * decay;
+
+            // 两阶段策略：
+            //   前半迭代 → 纯 Laplace 平滑，无视 cost，自由拉平台阶和折角
+            //   后半迭代 → 加入 xy cost 梯度排斥，推开墙壁微调（z 方向梯度始终禁用）
+            const bool use_cost = (iter >= max_iters / 2);
+            const double beta_eff = use_cost ? (beta * decay) : 0.0;
+
+            double max_delta = 0.0;
+
+            // Gauss-Seidel 逐点原地更新：
+            //   处理 path[i] 时 path[i-1] 已是本轮新位置，DDA 检查更准确；
+            //   path[i+1] 仍为旧值，但在下一轮处理 i+1 时会用新 path[i] 重新校验。
+            for (size_t i = 1; i + 1 < path.size(); ++i) {
+                // ---- 1. 拉普拉斯平滑力：移向前后邻居中点 ----
+                PointPose smooth_force;
+                smooth_force.x = (path[i - 1].x + path[i + 1].x) * 0.5 - path[i].x;
+                smooth_force.y = (path[i - 1].y + path[i + 1].y) * 0.5 - path[i].y;
+                smooth_force.z = (path[i - 1].z + path[i + 1].z) * 0.5 - path[i].z;
+
+                // ---- 2. cost 场梯度排斥力（仅后半阶段，仅 xy） ----
+                double gx = 0.0, gy = 0.0;
+                if (use_cost) {
+                    const GridIndex gi = worldToGrid(path[i].x, path[i].y, path[i].z);
+                    gx = (costFieldAt(GridIndex{gi.x + 1, gi.y, gi.z}) -
+                          costFieldAt(GridIndex{gi.x - 1, gi.y, gi.z})) / (2.0 * res);
+                    gy = (costFieldAt(GridIndex{gi.x, gi.y + 1, gi.z}) -
+                          costFieldAt(GridIndex{gi.x, gi.y - 1, gi.z})) / (2.0 * res);
+                }
+                // z 方向 cost 梯度始终禁用（地面支撑层会制造虚假向上推力）
+
+                PointPose candidate = path[i];
+                candidate.x += alpha_eff * smooth_force.x - beta_eff * gx;
+                candidate.y += alpha_eff * smooth_force.y - beta_eff * gy;
+                candidate.z += alpha_eff * smooth_force.z;
+
+                // ---- 3. 限制单步位移 ----
+                double move_dist = std::sqrt(
+                    (candidate.x - path[i].x) * (candidate.x - path[i].x) +
+                    (candidate.y - path[i].y) * (candidate.y - path[i].y) +
+                    (candidate.z - path[i].z) * (candidate.z - path[i].z));
+                if (move_dist > max_step && move_dist > 1e-12) {
+                    const double scale = max_step / move_dist;
+                    candidate.x = path[i].x + (candidate.x - path[i].x) * scale;
+                    candidate.y = path[i].y + (candidate.y - path[i].y) * scale;
+                    candidate.z = path[i].z + (candidate.z - path[i].z) * scale;
+                    move_dist = max_step;
+                }
+
+                // ---- 4. 安全检查 ----
+                bool accept = isSegmentTraversable(path[i - 1], candidate) &&
+                              isSegmentTraversable(candidate, path[i + 1]);
+                if (use_cost && accept) {
+                    // 后半阶段追加代价门控：不容许明显向障碍靠近
+                    const GridIndex gi = worldToGrid(path[i].x, path[i].y, path[i].z);
+                    const GridIndex ci = worldToGrid(candidate.x, candidate.y, candidate.z);
+                    accept = (costFieldAt(ci) <= costFieldAt(gi) + cost_tol);
+                }
+                if (accept) {
+                    path[i] = candidate;
+                    if (move_dist > max_delta) max_delta = move_dist;
+                }
+            }
+
+            if (max_delta < 1e-6) break;  // 收敛
+        }
+
+        // ---- 末尾安全验证：二分搜索找回最大安全位移 ----
+        const int BS_DEPTH = 10;
+        for (int pass = 0; pass < 5; ++pass) {
+            bool any_unsafe = false;
+            for (size_t i = 1; i + 1 < path.size(); ++i) {
+                if (!isSegmentTraversable(path[i - 1], path[i]) ||
+                    !isSegmentTraversable(path[i], path[i + 1])) {
+                    PointPose lo = original[i];
+                    PointPose hi = path[i];
+                    for (int bs = 0; bs < BS_DEPTH; ++bs) {
+                        PointPose mid;
+                        mid.x = (lo.x + hi.x) * 0.5;
+                        mid.y = (lo.y + hi.y) * 0.5;
+                        mid.z = (lo.z + hi.z) * 0.5;
+                        if (isSegmentTraversable(path[i - 1], mid) &&
+                            isSegmentTraversable(mid, path[i + 1])) {
+                            lo = mid;
+                        } else {
+                            hi = mid;
+                        }
+                    }
+                    path[i] = lo;
+                    any_unsafe = true;
+                }
+            }
+            if (!any_unsafe) break;
+        }
+
+        // 兜底：顽固点退回 original；全部退回则整体恢复
+        bool all_original = true;
+        for (size_t i = 1; i + 1 < path.size(); ++i) {
+            if (!isSegmentTraversable(path[i - 1], path[i]) ||
+                !isSegmentTraversable(path[i], path[i + 1])) {
+                path[i] = original[i];
+            }
+        }
+        for (size_t i = 0; i < path.size() && all_original; ++i) {
+            if (std::abs(path[i].x - original[i].x) > 1e-6 ||
+                std::abs(path[i].y - original[i].y) > 1e-6 ||
+                std::abs(path[i].z - original[i].z) > 1e-6) {
+                all_original = false;
+            }
+        }
+        if (all_original) path = original;
+    }
 
 }

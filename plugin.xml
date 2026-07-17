@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<library path="octo_planner_global_planner">
+  <class
+    name="octo_planner3d/OctoPlannerGlobalPlanner"
+    type="octo_planner3d::OctoPlannerGlobalPlanner"
+    base_class_type="nav2_core::GlobalPlanner">
+    <description>
+      3D OctoMap-based global planner with ESDF traversability analysis.
+      Plans in full 3D (x,y,z) using A* search on a prebuilt OctoMap.
+    </description>
+  </class>
+</library>

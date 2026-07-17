@@ -24,6 +24,11 @@
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 
+#include <nav2_msgs/action/compute_path_to_pose.hpp>
+#include <nav2_msgs/action/compute_path_through_poses.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
+
+
 // TF2 用于获取机器人位置
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
@@ -115,6 +120,7 @@ public:
     robot_base_frame_ = declare_parameter<std::string>("robot_base_frame", "base_footprint");
     transform_timeout_ = declare_parameter<double>("transform_timeout", 0.5);
     path_orientation_mode_ = declare_parameter<std::string>("path_orientation_mode", "interpolate");
+    planned_path_topic_ = declare_parameter<std::string>("planned_path_topic", "plan");
 
     // 规划参数（与机器人尺寸和导航行为相关）
     const double robot_radius = declare_parameter<double>("robot_radius", 0.25);
@@ -128,6 +134,31 @@ public:
     const int preblocked_costmap_radius_cells = declare_parameter<int>("preblocked_costmap_radius_cells", 3);
     const double preblocked_costmap_weight = declare_parameter<double>("preblocked_costmap_weight", 2.5);
     const bool lowest_traversable_only = declare_parameter<bool>("lowest_traversable_only", false);
+
+    // 平滑参数
+    const bool smoothing_enabled = declare_parameter<bool>("smoothing_enabled", true);
+    const double smoothing_simplify_epsilon =
+      declare_parameter<double>("smoothing_simplify_epsilon", 0.1);
+    const double smoothing_interp_spacing =
+      declare_parameter<double>("smoothing_interp_spacing", 0.15);
+    const int smoothing_gradient_iterations =
+      declare_parameter<int>("smoothing_gradient_iterations", 50);
+    const double smoothing_gradient_alpha =
+      declare_parameter<double>("smoothing_gradient_alpha", 0.3);
+    const double smoothing_cost_gradient_beta =
+      declare_parameter<double>("smoothing_cost_gradient_beta", 0.2);
+    const double smoothing_cost_tolerance =
+      declare_parameter<double>("smoothing_cost_tolerance", 0.1);
+    const double smoothing_max_step =
+      declare_parameter<double>("smoothing_max_step", 0.0);
+    const int smoothing_z_window_radius =
+      declare_parameter<int>("smoothing_z_window_radius", 3);
+
+    // A* 方向一致性参数
+    const double dir_change_weight =
+      declare_parameter<double>("dir_change_weight", 2.0);
+    const double diagonal_bridge_weight =
+      declare_parameter<double>("diagonal_bridge_weight", 5.0);
 
     converter_ = std::make_shared<pcd2octomap::Pcd2OctomapConverter>();
     converter_->setInputPcdFile(input_pcd);
@@ -152,6 +183,75 @@ public:
     planner_->setPreblockedCostmapRadiusCells(preblocked_costmap_radius_cells);
     planner_->setPreblockedCostmapWeight(preblocked_costmap_weight);
     planner_->setLowestTraversableOnly(lowest_traversable_only);
+
+    // 设置平滑参数
+    planner_->setSmoothingEnabled(smoothing_enabled);
+    planner_->setSmoothingSimplifyEpsilon(smoothing_simplify_epsilon);
+    planner_->setSmoothingInterpSpacing(smoothing_interp_spacing);
+    planner_->setSmoothingGradientIterations(smoothing_gradient_iterations);
+    planner_->setSmoothingGradientAlpha(smoothing_gradient_alpha);
+    planner_->setSmoothingCostGradientBeta(smoothing_cost_gradient_beta);
+    planner_->setSmoothingCostTolerance(smoothing_cost_tolerance);
+    planner_->setSmoothingMaxStep(smoothing_max_step);
+    planner_->setSmoothingZWindowRadius(smoothing_z_window_radius);
+
+    // 设置 A* 方向一致性参数
+    planner_->setDirChangeWeight(dir_change_weight);
+    planner_->setDiagonalBridgeWeight(diagonal_bridge_weight);
+
+    // ===== 参数运行时修改回调（支持 ros2 param set 实时调整） =====
+    param_handler_ = add_on_set_parameters_callback(
+      [this](const std::vector<rclcpp::Parameter> & params) {
+        for (const auto & p : params) {
+          const auto & name = p.get_name();
+          if (name == "robot_radius") planner_->setRobotRadius(p.as_double());
+          else if (name == "max_iterations") planner_->setMaxIterations(p.as_int());
+          else if (name == "snap_search_radius_cells") planner_->setSnapSearchRadiusCells(p.as_int());
+          else if (name == "require_ground_support") planner_->setRequireGroundSupport(p.as_bool());
+          else if (name == "strict_direct_ground_support") planner_->setStrictDirectGroundSupport(p.as_bool());
+          else if (name == "ground_support_xy_radius_cells") planner_->setGroundSupportXYRadiusCells(p.as_int());
+          else if (name == "ground_support_depth_cells") planner_->setGroundSupportDepthCells(p.as_int());
+          else if (name == "enable_preblocked_costmap") planner_->setEnablePreblockedCostmap(p.as_bool());
+          else if (name == "preblocked_costmap_radius_cells") planner_->setPreblockedCostmapRadiusCells(p.as_int());
+          else if (name == "preblocked_costmap_weight") planner_->setPreblockedCostmapWeight(p.as_double());
+          else if (name == "lowest_traversable_only") planner_->setLowestTraversableOnly(p.as_bool());
+          else if (name == "smoothing_enabled") planner_->setSmoothingEnabled(p.as_bool());
+          else if (name == "smoothing_simplify_epsilon") planner_->setSmoothingSimplifyEpsilon(p.as_double());
+          else if (name == "smoothing_interp_spacing") planner_->setSmoothingInterpSpacing(p.as_double());
+          else if (name == "smoothing_gradient_iterations") planner_->setSmoothingGradientIterations(p.as_int());
+          else if (name == "smoothing_gradient_alpha") planner_->setSmoothingGradientAlpha(p.as_double());
+          else if (name == "smoothing_cost_gradient_beta") planner_->setSmoothingCostGradientBeta(p.as_double());
+          else if (name == "smoothing_cost_tolerance") planner_->setSmoothingCostTolerance(p.as_double());
+          else if (name == "smoothing_max_step") planner_->setSmoothingMaxStep(p.as_double());
+          else if (name == "smoothing_z_window_radius") planner_->setSmoothingZWindowRadius(p.as_int());
+          else if (name == "dir_change_weight") planner_->setDirChangeWeight(p.as_double());
+          else if (name == "diagonal_bridge_weight") planner_->setDiagonalBridgeWeight(p.as_double());
+        }
+        rcl_interfaces::msg::SetParametersResult result;
+        result.successful = true;
+        return result;
+      });
+
+    // ===== Action Server: 在 OctoMap 构建前注册，确保 bt_navigator 启动时可见 =====
+    using nav2_msgs::action::ComputePathToPose;
+    using GoalHandle = rclcpp_action::ServerGoalHandle<ComputePathToPose>;
+    action_server_ = rclcpp_action::create_server<ComputePathToPose>(
+      this, "compute_path_to_pose",
+      [](const rclcpp_action::GoalUUID &, std::shared_ptr<const ComputePathToPose::Goal>) {
+        return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE; },
+      [](const std::shared_ptr<GoalHandle>) { return rclcpp_action::CancelResponse::ACCEPT; },
+      [this](const std::shared_ptr<GoalHandle> h) { executeComputePathToPose(h); });
+    RCLCPP_INFO(get_logger(), "ComputePathToPose action server ready");
+
+    using nav2_msgs::action::ComputePathThroughPoses;
+    using PathThroughGoalHandle = rclcpp_action::ServerGoalHandle<ComputePathThroughPoses>;
+    action_through_poses_server_ = rclcpp_action::create_server<ComputePathThroughPoses>(
+      this, "compute_path_through_poses",
+      [](const rclcpp_action::GoalUUID &, std::shared_ptr<const ComputePathThroughPoses::Goal>) {
+        return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE; },
+      [](const std::shared_ptr<PathThroughGoalHandle>) { return rclcpp_action::CancelResponse::ACCEPT; },
+      [this](const std::shared_ptr<PathThroughGoalHandle> h) { executeComputePathThroughPoses(h); });
+    RCLCPP_INFO(get_logger(), "ComputePathThroughPoses action server ready");
 
     RCLCPP_INFO(get_logger(), "Building OctoMap from configured PCD file...");
     if (!converter_->convert()) {
@@ -185,17 +285,16 @@ public:
     map_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("occupied_map", transient_qos);
     map_cloud_pub_ =
       create_publisher<sensor_msgs::msg::PointCloud2>("occupied_map_cloud", transient_qos);
+    cost_cloud_pub_ =
+      create_publisher<sensor_msgs::msg::PointCloud2>("cost_map_cloud", transient_qos);
 
     // 导航路径发布器（用于Nav2执行）
-    path_pub_ = create_publisher<nav_msgs::msg::Path>("planned_path", transient_qos);
+    path_pub_ = create_publisher<nav_msgs::msg::Path>(planned_path_topic_, transient_qos);
     path_marker_pub_ =
       create_publisher<visualization_msgs::msg::Marker>("planned_path_marker", transient_qos);
     nav_start_marker_pub_ =
       create_publisher<visualization_msgs::msg::Marker>("nav_start_marker", transient_qos);
-    nav_goal_marker_pub_ =
-      create_publisher<visualization_msgs::msg::Marker>("nav_goal_marker", transient_qos);
-
-    // 测试路径发布器（仅供可视化，不影响导航）
+    // 测试目标Marker可视化
     test_path_pub_ = create_publisher<nav_msgs::msg::Path>("test_path", transient_qos);
     test_path_marker_pub_ =
       create_publisher<visualization_msgs::msg::Marker>("test_path_marker", transient_qos);
@@ -204,16 +303,11 @@ public:
     test_goal_marker_pub_ =
       create_publisher<visualization_msgs::msg::Marker>("test_goal_marker", transient_qos);
 
-    // 订阅器：导航模式（initialpose + goal_pose）
+    // 订阅器：导航模式（initialpose 设置起点，通过 compute_path_to_pose action 接收目标）
     start_sub_ = create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
       "initialpose",
       rclcpp::QoS(10),
       std::bind(&OctoPlannerRvizNode::onNavStartPose, this, std::placeholders::_1));
-    goal_sub_ = create_subscription<geometry_msgs::msg::PoseStamped>(
-      "goal_pose",
-      rclcpp::QoS(10),
-      std::bind(&OctoPlannerRvizNode::onNavGoalPose, this, std::placeholders::_1));
-
     // 订阅器：测试模式（RViz Publish Point）
     clicked_point_sub_ = create_subscription<geometry_msgs::msg::PointStamped>(
       clicked_point_topic,
@@ -223,7 +317,7 @@ public:
     // 初始化 TF2（用于自动获取机器人位置）
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
-    RCLCPP_INFO(get_logger(), "TF2 initialized. Auto-start from robot position when goal_pose received without initialpose.");
+    RCLCPP_INFO(get_logger(), "TF2 initialized.");
 
     publishMap();
     if (map_publish_period > 0.0) {
@@ -235,7 +329,7 @@ public:
 
     RCLCPP_INFO(
       get_logger(),
-      "Ready. Use RViz2 Publish Point on %s: first click sets start, second click sets goal.",
+      "Ready. Use RViz2 Publish Point on %s for test path.",
       clicked_point_topic.c_str());
   }
 
@@ -248,57 +342,11 @@ private:
     publishPoseMarker(nav_start_, "nav_start", 0, makeColor(0.1F, 0.9F, 0.2F, 1.0F), nav_start_marker_pub_);
     RCLCPP_INFO(
       get_logger(),
-      "[Nav Mode] Start set to [%.3f, %.3f, %.3f]",
+      "[Nav Mode] Start set to [%.3f, %.3f, %.3f] (planning via ComputePathToPose action)",
       nav_start_.x,
       nav_start_.y,
       nav_start_.z);
-    planNavPath();
-  }
-
-  void onNavGoalPose(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
-  {
-    // 保存导航目标朝向（用于路径朝向计算）
-    nav_goal_orientation_ = msg->pose.orientation;
-
-    nav_goal_ = toPlannerPoint(msg->pose, goal_z_);
-    has_nav_goal_ = true;
-    publishPoseMarker(nav_goal_, "nav_goal", 0, makeColor(0.95F, 0.25F, 0.15F, 1.0F), nav_goal_marker_pub_);
-    RCLCPP_INFO(
-      get_logger(),
-      "[Nav Mode] Goal set to [%.3f, %.3f, %.3f]",
-      nav_goal_.x,
-      nav_goal_.y,
-      nav_goal_.z);
-
-    // 每次 goal_pose 从 TF 重新获取机器人当前位置作为起点
-    // 这样即使机器人移动了，新路径也从当前位置开始规划
-    try {
-      geometry_msgs::msg::TransformStamped transform;
-      transform = tf_buffer_->lookupTransform(
-        frame_id_, robot_base_frame_,
-        tf2::TimePointZero);
-
-      nav_start_.x = transform.transform.translation.x;
-      nav_start_.y = transform.transform.translation.y;
-      nav_start_.z = transform.transform.translation.z;
-      if (std::abs(nav_start_.z) < kZeroZThreshold) {
-        nav_start_.z = start_z_;
-      }
-
-      has_nav_start_ = true;
-      publishPoseMarker(nav_start_, "nav_start", 0, makeColor(0.1F, 0.9F, 0.2F, 1.0F), nav_start_marker_pub_);
-      RCLCPP_INFO(
-        get_logger(),
-        "[Nav Mode] Auto-start from robot TF: [%.3f, %.3f, %.3f]",
-        nav_start_.x,
-        nav_start_.y,
-        nav_start_.z);
-    } catch (const tf2::TransformException & ex) {
-      RCLCPP_WARN(get_logger(), "[Nav Mode] Failed to get robot position from TF: %s", ex.what());
-      has_nav_start_ = false;
-    }
-
-    planNavPath();
+    // 不再调用 planNavPath()：导航规划由 ComputePathToPose action server 统一处理
   }
 
   // ===== 测试模式回调 =====
@@ -346,16 +394,38 @@ private:
     const size_t report_interval = std::max(size_t(1), total_leafs / 10);
     size_t processed = 0;
 
+    const double res = octree_->getResolution();
+    const double eps = res * 1e-6;
+
     for (auto it = octree_->begin_leafs(); it != octree_->end_leafs(); ++it) {
       if (!octree_->isNodeOccupied(*it)) {
         continue;
       }
-      CachedVoxel voxel;
-      voxel.x = static_cast<float>(it.getX());
-      voxel.y = static_cast<float>(it.getY());
-      voxel.z = static_cast<float>(it.getZ());
-      voxel.size = static_cast<float>(it.getSize());
-      cached_voxels_.push_back(voxel);
+      double size = it.getSize();
+      if (size <= res * 1.01) {
+        // 细叶子：直接存
+        CachedVoxel voxel;
+        voxel.x = static_cast<float>(it.getX());
+        voxel.y = static_cast<float>(it.getY());
+        voxel.z = static_cast<float>(it.getZ());
+        voxel.size = static_cast<float>(size);
+        cached_voxels_.push_back(voxel);
+      } else {
+        // 粗叶子：展开为细格子存入
+        double half = size * 0.5;
+        for (double cx = it.getX() - half + res * 0.5; cx <= it.getX() + half - eps; cx += res) {
+          for (double cy = it.getY() - half + res * 0.5; cy <= it.getY() + half - eps; cy += res) {
+            for (double cz = it.getZ() - half + res * 0.5; cz <= it.getZ() + half - eps; cz += res) {
+              CachedVoxel voxel;
+              voxel.x = static_cast<float>(cx);
+              voxel.y = static_cast<float>(cy);
+              voxel.z = static_cast<float>(cz);
+              voxel.size = static_cast<float>(res);
+              cached_voxels_.push_back(voxel);
+            }
+          }
+        }
+      }
 
       ++processed;
       if (processed % report_interval == 0) {
@@ -445,6 +515,8 @@ private:
     const double plan_elapsed =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
 
+    planner_->smoothPath();
+
     std::vector<global_planner::PointPose> path;
     planner_->getPlannerResults(path);
     if (path.empty()) {
@@ -454,7 +526,9 @@ private:
     }
 
     publishNavPath(path);
-    RCLCPP_INFO(get_logger(), "[Nav Mode] Published nav path with %zu poses (%.2f s).", path.size(), plan_elapsed);
+    publishCostCloud();
+    RCLCPP_INFO(get_logger(), "[Nav Mode] Published nav path with %zu poses (%.2f s).",
+                path.size(), plan_elapsed);
   }
 
   // ===== 测试路径规划 =====
@@ -468,6 +542,7 @@ private:
                 test_start_.x, test_start_.y, test_start_.z, test_goal_.x, test_goal_.y, test_goal_.z);
     const auto t_start = std::chrono::steady_clock::now();
     planner_->makePlan(test_start_, test_goal_);
+    planner_->smoothPath();
     const double plan_elapsed =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
 
@@ -480,7 +555,180 @@ private:
     }
 
     publishTestPath(path);
+    publishCostCloud();
     RCLCPP_INFO(get_logger(), "[Test Mode] Published test path with %zu poses (%.2f s).", path.size(), plan_elapsed);
+  }
+
+  // ===== 从 TF 获取机器人当前位姿 =====
+  bool getRobotPose(global_planner::PointPose & pose)
+  {
+    if (!tf_buffer_) {
+      RCLCPP_ERROR(get_logger(), "TF buffer not ready yet");
+      return false;
+    }
+    geometry_msgs::msg::TransformStamped t;
+    try {
+      t = tf_buffer_->lookupTransform(frame_id_, robot_base_frame_, tf2::TimePointZero);
+    } catch (const tf2::TransformException & e) {
+      RCLCPP_ERROR(get_logger(), "TF lookup(%s->%s) failed: %s",
+                   frame_id_.c_str(), robot_base_frame_.c_str(), e.what());
+      return false;
+    }
+    pose.x = t.transform.translation.x;
+    pose.y = t.transform.translation.y;
+    pose.z = t.transform.translation.z;
+    return true;
+  }
+
+  // ===== Nav2 ComputePathToPose action 处理 =====
+  void executeComputePathToPose(
+    const std::shared_ptr<rclcpp_action::ServerGoalHandle<nav2_msgs::action::ComputePathToPose>> handle)
+  {
+    const auto goal = handle->get_goal();
+
+    auto result = std::make_shared<nav2_msgs::action::ComputePathToPose::Result>();
+    result->path.header.frame_id = frame_id_;
+    result->path.header.stamp = now();
+
+    if (!planner_ || !octree_) {
+      RCLCPP_ERROR(get_logger(), "Planner/OctoMap not ready");
+      handle->abort(result);
+      return;
+    }
+
+    // start from TF, goal from action request
+    global_planner::PointPose sp;
+    if (!getRobotPose(sp)) {
+      handle->abort(result);
+      return;
+    }
+
+    global_planner::PointPose gp;
+    gp.x = goal->goal.pose.position.x;
+    gp.y = goal->goal.pose.position.y;
+    gp.z = goal->goal.pose.position.z + goal_z_;
+
+    RCLCPP_INFO(get_logger(), "[Nav2 Action] Planning [%.2f,%.2f,%.2f] -> [%.2f,%.2f,%.2f]",
+                sp.x, sp.y, sp.z, gp.x, gp.y, gp.z);
+
+    const auto t0 = std::chrono::steady_clock::now();
+    planner_->makePlan(sp, gp);
+    planner_->smoothPath();
+
+    std::vector<global_planner::PointPose> raw;
+    planner_->getPlannerResults(raw);
+    const double elapsed =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+
+    if (raw.empty()) {
+      RCLCPP_WARN(get_logger(), "[Nav2 Action] Empty path (%.2f s)", elapsed);
+      handle->abort(result);
+      return;
+    }
+
+    // build nav_msgs::Path with orientation interpolation
+    result->path.poses.reserve(raw.size());
+    for (size_t i = 0; i < raw.size(); ++i) {
+      geometry_msgs::msg::PoseStamped pose;
+      pose.header = result->path.header;
+      pose.pose.position.x = raw[i].x;
+      pose.pose.position.y = raw[i].y;
+      pose.pose.position.z = raw[i].z;
+      if (i < raw.size() - 1) {
+        double yaw = std::atan2(raw[i + 1].y - raw[i].y, raw[i + 1].x - raw[i].x);
+        tf2::Quaternion q;
+        q.setRPY(0, 0, yaw);
+        pose.pose.orientation = tf2::toMsg(q);
+      } else if (i > 0) {
+        pose.pose.orientation = result->path.poses[i - 1].pose.orientation;
+      } else {
+        pose.pose.orientation.w = 1.0;
+      }
+      result->path.poses.push_back(pose);
+    }
+
+    // publish to /plan for RViz
+    nav_msgs::msg::Path viz_path = result->path;
+    path_pub_->publish(viz_path);
+
+    handle->succeed(result);
+    RCLCPP_INFO(get_logger(), "[Nav2 Action] Planned %zu poses in %.2f s", raw.size(), elapsed);
+  }
+
+  // ===== Nav2 ComputePathThroughPoses action 处理（复用同一 planner）=====
+  void executeComputePathThroughPoses(
+    const std::shared_ptr<rclcpp_action::ServerGoalHandle<nav2_msgs::action::ComputePathThroughPoses>> handle)
+  {
+    const auto goal = handle->get_goal();
+    if (goal->goals.empty()) {
+      handle->abort(std::make_shared<nav2_msgs::action::ComputePathThroughPoses::Result>());
+      return;
+    }
+    // 使用最后一个途经点作为目标，行为与 ComputePathToPose 一致
+    const auto & gpose = goal->goals.back().pose;
+
+    auto result = std::make_shared<nav2_msgs::action::ComputePathThroughPoses::Result>();
+    result->path.header.frame_id = frame_id_;
+    result->path.header.stamp = now();
+
+    if (!planner_ || !octree_) {
+      RCLCPP_ERROR(get_logger(), "Planner/OctoMap not ready");
+      handle->abort(result);
+      return;
+    }
+
+    global_planner::PointPose sp;
+    if (!getRobotPose(sp)) {
+      handle->abort(result);
+      return;
+    }
+
+    global_planner::PointPose gp;
+    gp.x = gpose.position.x;
+    gp.y = gpose.position.y;
+    gp.z = gpose.position.z + goal_z_;
+
+    RCLCPP_INFO(get_logger(), "[Nav2 ThroughPoses] Planning [%.2f,%.2f,%.2f] -> [%.2f,%.2f,%.2f]",
+                sp.x, sp.y, sp.z, gp.x, gp.y, gp.z);
+
+    const auto t0 = std::chrono::steady_clock::now();
+    planner_->makePlan(sp, gp);
+    planner_->smoothPath();
+
+    std::vector<global_planner::PointPose> raw;
+    planner_->getPlannerResults(raw);
+    const double elapsed =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+
+    if (raw.empty()) {
+      RCLCPP_WARN(get_logger(), "[Nav2 ThroughPoses] Empty path (%.2f s)", elapsed);
+      handle->abort(result);
+      return;
+    }
+
+    result->path.poses.reserve(raw.size());
+    for (size_t i = 0; i < raw.size(); ++i) {
+      geometry_msgs::msg::PoseStamped pose;
+      pose.header = result->path.header;
+      pose.pose.position.x = raw[i].x;
+      pose.pose.position.y = raw[i].y;
+      pose.pose.position.z = raw[i].z;
+      if (i < raw.size() - 1) {
+        double yaw = std::atan2(raw[i + 1].y - raw[i].y, raw[i + 1].x - raw[i].x);
+        tf2::Quaternion q;
+        q.setRPY(0, 0, yaw);
+        pose.pose.orientation = tf2::toMsg(q);
+      } else if (i > 0) {
+        pose.pose.orientation = result->path.poses[i - 1].pose.orientation;
+      } else {
+        pose.pose.orientation.w = 1.0;
+      }
+      result->path.poses.push_back(pose);
+    }
+
+    path_pub_->publish(result->path);
+    handle->succeed(result);
+    RCLCPP_INFO(get_logger(), "[Nav2 ThroughPoses] Planned %zu poses in %.2f s", raw.size(), elapsed);
   }
 
   void publishMap()
@@ -572,7 +820,7 @@ private:
       cloud_msg.is_bigendian = false;
       cloud_msg.is_dense = true;
 
-      cloud_msg.fields.resize(3);
+      cloud_msg.fields.resize(4);
       cloud_msg.fields[0].name = "x";
       cloud_msg.fields[0].offset = 0;
       cloud_msg.fields[0].datatype = sensor_msgs::msg::PointField::FLOAT32;
@@ -585,8 +833,12 @@ private:
       cloud_msg.fields[2].offset = 8;
       cloud_msg.fields[2].datatype = sensor_msgs::msg::PointField::FLOAT32;
       cloud_msg.fields[2].count = 1;
+      cloud_msg.fields[3].name = "intensity";
+      cloud_msg.fields[3].offset = 12;
+      cloud_msg.fields[3].datatype = sensor_msgs::msg::PointField::FLOAT32;
+      cloud_msg.fields[3].count = 1;
 
-      cloud_msg.point_step = 12;
+      cloud_msg.point_step = 16;
       cloud_msg.row_step = cloud_msg.point_step * cloud_msg.width;
       cloud_msg.data.resize(cloud_msg.row_step);
 
@@ -594,11 +846,14 @@ private:
         sensor_msgs::PointCloud2Iterator<float> iter_x(cloud_msg, "x");
         sensor_msgs::PointCloud2Iterator<float> iter_y(cloud_msg, "y");
         sensor_msgs::PointCloud2Iterator<float> iter_z(cloud_msg, "z");
+        sensor_msgs::PointCloud2Iterator<float> iter_i(cloud_msg, "intensity");
         for (const auto & pt : cloud_points) {
           *iter_x = static_cast<float>(pt.x);
           *iter_y = static_cast<float>(pt.y);
           *iter_z = static_cast<float>(pt.z);
-          ++iter_x; ++iter_y; ++iter_z;
+          // occupied voxel: intensity=1.0 表示不可通行
+          *iter_i = 1.0f;
+          ++iter_x; ++iter_y; ++iter_z; ++iter_i;
         }
       }
 
@@ -623,6 +878,61 @@ private:
     }
     const float k = static_cast<float>((t - 0.66) / 0.34);
     return makeColor(0.95F, 0.90F - 0.45F * k, 0.15F + 0.05F * k, alpha);
+  }
+
+  // ===== Cost 云发布 =====
+  void publishCostCloud()
+  {
+    if (!planner_ || !cost_cloud_pub_) return;
+
+    std::vector<std::array<double, 4>> cost_cloud;
+    planner_->getCostCloud(cost_cloud);
+    if (cost_cloud.empty()) return;
+
+    sensor_msgs::msg::PointCloud2 cloud_msg;
+    cloud_msg.header.frame_id = frame_id_;
+    cloud_msg.header.stamp = now();
+    cloud_msg.height = 1;
+    cloud_msg.width = static_cast<uint32_t>(cost_cloud.size());
+    cloud_msg.is_bigendian = false;
+    cloud_msg.is_dense = true;
+
+    cloud_msg.fields.resize(4);
+    cloud_msg.fields[0].name = "x";
+    cloud_msg.fields[0].offset = 0;
+    cloud_msg.fields[0].datatype = sensor_msgs::msg::PointField::FLOAT32;
+    cloud_msg.fields[0].count = 1;
+    cloud_msg.fields[1].name = "y";
+    cloud_msg.fields[1].offset = 4;
+    cloud_msg.fields[1].datatype = sensor_msgs::msg::PointField::FLOAT32;
+    cloud_msg.fields[1].count = 1;
+    cloud_msg.fields[2].name = "z";
+    cloud_msg.fields[2].offset = 8;
+    cloud_msg.fields[2].datatype = sensor_msgs::msg::PointField::FLOAT32;
+    cloud_msg.fields[2].count = 1;
+    cloud_msg.fields[3].name = "intensity";
+    cloud_msg.fields[3].offset = 12;
+    cloud_msg.fields[3].datatype = sensor_msgs::msg::PointField::FLOAT32;
+    cloud_msg.fields[3].count = 1;
+
+    cloud_msg.point_step = 16;
+    cloud_msg.row_step = cloud_msg.point_step * cloud_msg.width;
+    cloud_msg.data.resize(cloud_msg.row_step);
+
+    sensor_msgs::PointCloud2Iterator<float> iter_x(cloud_msg, "x");
+    sensor_msgs::PointCloud2Iterator<float> iter_y(cloud_msg, "y");
+    sensor_msgs::PointCloud2Iterator<float> iter_z(cloud_msg, "z");
+    sensor_msgs::PointCloud2Iterator<float> iter_i(cloud_msg, "intensity");
+    for (const auto & pt : cost_cloud) {
+      *iter_x = static_cast<float>(pt[0]);
+      *iter_y = static_cast<float>(pt[1]);
+      *iter_z = static_cast<float>(pt[2]);
+      *iter_i = static_cast<float>(pt[3]);
+      ++iter_x; ++iter_y; ++iter_z; ++iter_i;
+    }
+
+    cost_cloud_pub_->publish(cloud_msg);
+    RCLCPP_INFO(get_logger(), "Published cost cloud with %zu points.", cost_cloud.size());
   }
 
   // ===== 导航路径发布 =====
@@ -819,6 +1129,7 @@ private:
   std::string robot_base_frame_ = "base_footprint";
   double transform_timeout_ = 0.5;
   std::string path_orientation_mode_ = "interpolate";
+  std::string planned_path_topic_ = "planned_path";
 
   // OctoMap和规划器
   std::shared_ptr<pcd2octomap::Pcd2OctomapConverter> converter_;
@@ -834,9 +1145,14 @@ private:
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr path_marker_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr nav_start_marker_pub_;
-  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr nav_goal_marker_pub_;
 
-  // 测试路径发布器（仅供可视化，不影响导航）
+  // Nav2 ComputePathToPose action server
+  rclcpp_action::Server<nav2_msgs::action::ComputePathToPose>::SharedPtr action_server_;
+
+  // Nav2 ComputePathThroughPoses action server (满足 bt_navigator 启动依赖)
+  rclcpp_action::Server<nav2_msgs::action::ComputePathThroughPoses>::SharedPtr action_through_poses_server_;
+
+
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr test_path_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr test_path_marker_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr test_start_marker_pub_;
@@ -845,13 +1161,18 @@ private:
   // 地图可视化发布器
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr map_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_cloud_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cost_cloud_pub_;
 
   // 订阅器
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr start_sub_;
-  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr clicked_point_sub_;
 
+  
+
   rclcpp::TimerBase::SharedPtr map_timer_;
+
+  // 参数运行时修改回调句柄
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_handler_;
 };
 
 int main(int argc, char ** argv)

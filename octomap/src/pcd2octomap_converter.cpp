@@ -489,7 +489,7 @@ bool Pcd2OctomapConverter::saveOctomap() const
     return false;
   }
 
-  bool ok = tree_->writeBinary(output_bt_);
+  bool ok = tree_->writeBinaryConst(output_bt_);
 
   const double elapsed =
     std::chrono::duration<double>(
