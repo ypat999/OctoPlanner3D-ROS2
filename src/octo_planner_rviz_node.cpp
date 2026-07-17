@@ -639,10 +639,9 @@ private:
         tf2::Quaternion q;
         q.setRPY(0, 0, yaw);
         pose.pose.orientation = tf2::toMsg(q);
-      } else if (i > 0) {
-        pose.pose.orientation = result->path.poses[i - 1].pose.orientation;
       } else {
-        pose.pose.orientation.w = 1.0;
+        // 最后一个点使用 goal 的目标朝向
+        pose.pose.orientation = goal->goal.pose.orientation;
       }
       result->path.poses.push_back(pose);
     }
@@ -718,10 +717,9 @@ private:
         tf2::Quaternion q;
         q.setRPY(0, 0, yaw);
         pose.pose.orientation = tf2::toMsg(q);
-      } else if (i > 0) {
-        pose.pose.orientation = result->path.poses[i - 1].pose.orientation;
       } else {
-        pose.pose.orientation.w = 1.0;
+        // 最后一个点使用 goal 的目标朝向
+        pose.pose.orientation = gpose.orientation;
       }
       result->path.poses.push_back(pose);
     }
