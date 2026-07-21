@@ -1515,26 +1515,43 @@ namespace global_planner
         }
 
         const int64_t size = static_cast<int64_t>(preblocked_cost_grid_.size());
+        const double res = octree_->getResolution();
+
+        // 第一遍：找到最高可通行层的z坐标
+        double max_traversable_z = -1e9;
+        for (int64_t lin = 0; lin < size; ++lin) {
+            if (preblocked_cost_grid_[lin] < 0.999) {
+                const int64_t z_off = lin % grid_dim_z_;
+                const double wz = (z_off + grid_min_.z + 0.5) * res;
+                if (wz > max_traversable_z) max_traversable_z = wz;
+            }
+        }
+        const double z_cutoff = max_traversable_z - 1.0;
+
         std::vector<PointPose> pos;
         std::vector<double> cost;
         pos.reserve(size);
         cost.reserve(size);
 
-        int64_t non_zero = 0;
+        int64_t total = 0;
         for (int64_t lin = 0; lin < size; ++lin) {
             const double c = preblocked_cost_grid_[lin];
             if (c >= 0.999) continue;  // 排除障碍(c=1.0)，已在occupied_map_cloud中可见
-            ++non_zero;
+
+            const int64_t z_off = lin % grid_dim_z_;
+            const double wz = (z_off + grid_min_.z + 0.5) * res;
+            if (wz > z_cutoff) continue;  // 排除高于可通行层1m的屋顶区域
+
+            ++total;
 
             // 从线性索引反求栅格坐标
-            const int64_t z = lin % grid_dim_z_;
             const int64_t rem = lin / grid_dim_z_;
-            const int64_t y = rem % grid_dim_y_;
-            const int64_t x = rem / grid_dim_y_;
+            const int64_t y_off = rem % grid_dim_y_;
+            const int64_t x_off = rem / grid_dim_y_;
             const GridIndex idx{
-                static_cast<int>(x + grid_min_.x),
-                static_cast<int>(y + grid_min_.y),
-                static_cast<int>(z + grid_min_.z)};
+                static_cast<int>(x_off + grid_min_.x),
+                static_cast<int>(y_off + grid_min_.y),
+                static_cast<int>(z_off + grid_min_.z)};
             const auto p = gridToWorld(idx);
             pos.push_back(PointPose{p.x(), p.y(), p.z()});
             cost.push_back(c);
@@ -1543,8 +1560,9 @@ namespace global_planner
         out_positions = std::move(pos);
         out_costs = std::move(cost);
         std::cout << "getCostFieldCloud: grid_size=" << size
-                  << " non_zero=" << non_zero
-                  << " out=" << out_positions.size() << std::endl;
+                  << " max_tz=" << max_traversable_z
+                  << " z_cutoff=" << z_cutoff
+                  << " included=" << out_positions.size() << std::endl;
     }
 
     void GlobalPlanner::simplifyPath(std::vector<PointPose> & path, double epsilon) const
