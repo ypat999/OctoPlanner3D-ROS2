@@ -1523,7 +1523,7 @@ namespace global_planner
         int64_t non_zero = 0;
         for (int64_t lin = 0; lin < size; ++lin) {
             const double c = preblocked_cost_grid_[lin];
-            if (c <= 0.05 || c >= 0.999) continue;  // 只显示梯度区 (0.05, 0.999)，排除平坦区(c=0)和障碍(c=1.0)
+            if (c >= 0.999) continue;  // 排除障碍(c=1.0)，已在occupied_map_cloud中可见
             ++non_zero;
 
             // 从线性索引反求栅格坐标
