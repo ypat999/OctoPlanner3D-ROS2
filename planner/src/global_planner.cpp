@@ -421,7 +421,7 @@ namespace global_planner
         return false;
         }
 
-        for (int z = idx.z - 1; z >= 0; --z) {
+        for (int z = idx.z - 1, cnt = 0; z >= 0 && cnt < support_depth_cells; --z, ++cnt) {
         const GridIndex below_idx{idx.x, idx.y, z};
         if (isOccupiedCell(below_idx)) {
             break;
