@@ -1508,7 +1508,11 @@ namespace global_planner
     {
         out_positions.clear();
         out_costs.clear();
-        if (!octree_ || preblocked_cost_grid_.empty()) return;
+        if (!octree_ || preblocked_cost_grid_.empty()) {
+            std::cout << "getCostFieldCloud: octree=" << (octree_ ? "ok" : "null")
+                      << " grid_size=" << preblocked_cost_grid_.size() << std::endl;
+            return;
+        }
 
         const int64_t size = static_cast<int64_t>(preblocked_cost_grid_.size());
         std::vector<PointPose> pos;
@@ -1516,9 +1520,11 @@ namespace global_planner
         pos.reserve(size);
         cost.reserve(size);
 
+        int64_t non_zero = 0;
         for (int64_t lin = 0; lin < size; ++lin) {
             const double c = preblocked_cost_grid_[lin];
-            if (c <= 0.0) continue;  // 忽略零代价区域（远障碍平坦区）
+            if (c <= 0.0) continue;
+            ++non_zero;  // 忽略零代价区域（远障碍平坦区）
 
             // 从线性索引反求栅格坐标
             const int64_t z = lin % grid_dim_z_;
@@ -1536,6 +1542,9 @@ namespace global_planner
 
         out_positions = std::move(pos);
         out_costs = std::move(cost);
+        std::cout << "getCostFieldCloud: grid_size=" << size
+                  << " non_zero=" << non_zero
+                  << " out=" << out_positions.size() << std::endl;
     }
 
     void GlobalPlanner::simplifyPath(std::vector<PointPose> & path, double epsilon) const

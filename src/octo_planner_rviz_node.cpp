@@ -858,6 +858,8 @@ private:
       map_cloud_pub_->publish(cloud_msg);
     }
 
+    publishCostCloud();
+
     const double total_s =
       std::chrono::duration<double>(
         std::chrono::steady_clock::now() - t_start).count();
@@ -881,11 +883,19 @@ private:
   // ===== Cost 云发布 =====
   void publishCostCloud()
   {
-    if (!planner_ || !cost_map_cloud_pub_) return;
+    if (!planner_) {
+      RCLCPP_WARN(get_logger(), "publishCostCloud: planner_ is null");
+      return;
+    }
+    if (!cost_map_cloud_pub_) {
+      RCLCPP_WARN(get_logger(), "publishCostCloud: cost_map_cloud_pub_ is null");
+      return;
+    }
 
     std::vector<global_planner::PointPose> cost_pos;
     std::vector<double> cost_vals;
     planner_->getCostFieldCloud(cost_pos, cost_vals);
+    RCLCPP_INFO(get_logger(), "publishCostCloud: got %zu cost points", cost_pos.size());
     if (cost_pos.empty()) return;
 
     sensor_msgs::msg::PointCloud2 cloud_msg;
