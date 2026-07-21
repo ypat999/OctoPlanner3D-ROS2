@@ -229,10 +229,9 @@ nav_msgs::msg::Path OctoPlannerGlobalPlanner::createPlan(
       tf2::Quaternion q;
       q.setRPY(0, 0, yaw);
       pose.pose.orientation = tf2::toMsg(q);
-    } else if (i > 0) {
-      pose.pose.orientation = plan.poses[i - 1].pose.orientation;
     } else {
-      pose.pose.orientation.w = 1.0;
+      // 最后一个点使用 goal 的目标朝向
+      pose.pose.orientation = goal.pose.orientation;
     }
     plan.poses.push_back(pose);
   }

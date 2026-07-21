@@ -9,7 +9,7 @@
     # output_bt: "result_cleaned.bt"
 
     # OctoMap 构建参数
-    resolution: 0.5            # 体素分辨率（米），建议与 PCD 降采样分辨率一致
+    resolution: 0.25            # 体素分辨率（米），建议与 PCD 降采样分辨率一致
     min_points_per_voxel: 1    # 每个体素至少需要的点数，已降采样的点云建议设为 1
     min_cluster_voxels: 2      # 最小连通聚类体素数，已降采样的点云建议设为 1
 
@@ -59,7 +59,7 @@
     # 起点/终点吸附搜索半径（栅格数），用于找到最近的可行点
     # 增加此值可在更大的范围内搜索平坦区域作为起点/终点，减少从路沿/草丛开始
     # 注意：修改此参数不会触发缓存重新计算，需手动删除 .bt_planning_cache 或接受当前缓存
-    snap_search_radius_cells: 20
+    snap_search_radius_cells: 1
 
     # ===== 地面支撑参数（跨楼层/跨楼梯能力）=====
     # 是否要求地面支撑（关闭可支持飞行模式）
@@ -67,15 +67,18 @@
 
     # 是否严格正下方支撑（关闭允许斜坡/边缘支撑）
     # 开启此选项可减少跨越草丛和路沿的行为，要求路径点正下方必须有支撑
-    strict_direct_ground_support: true
+    # 注意：分辨率降低时（如0.25），严格模式只查下方1格（0.25m），容易失效
+    # 如果频繁规划失败，建议关闭此选项并增大 ground_support_depth_cells
+    strict_direct_ground_support: false
 
     # 地面支撑XY半径（栅格数），增加可支持斜坡
     # 减小此值可减少跨越小障碍物（如路沿、小草丛），保持更大的平坦区域
-    ground_support_xy_radius_cells: 1
+    ground_support_xy_radius_cells: 2
 
     # 地面支撑深度（栅格数），增加可支持跨楼梯
     # 减小此值可减少跨越台阶和楼梯，适合走平路场景
-    ground_support_depth_cells: 1
+    # 分辨率 0.25 时建议 ≥ 3（对应 0.75m 物理深度）
+    ground_support_depth_cells: 3
 
     # ===== 障碍物避让参数（高度约束）=====
     # 启用预阻塞代价图（根据 robot_radius 和预阻塞半径计算可通行性）

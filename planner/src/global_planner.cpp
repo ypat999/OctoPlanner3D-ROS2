@@ -71,6 +71,7 @@ namespace global_planner
         if (!ok) 
         {
             std::cout << "GlobalPlanner::tryPlan() A* planning failed. " << std::endl;
+            planner_results_.clear();  // 失败时清空旧路径，避免返回过期结果
         } 
         else 
         {

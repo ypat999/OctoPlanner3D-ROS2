@@ -526,6 +526,7 @@ private:
     }
 
     publishNavPath(path);
+    publishCostCloud();
     RCLCPP_INFO(get_logger(), "[Nav Mode] Published nav path with %zu poses (%.2f s).",
                 path.size(), plan_elapsed);
   }
@@ -554,6 +555,7 @@ private:
     }
 
     publishTestPath(path);
+    publishCostCloud();
     RCLCPP_INFO(get_logger(), "[Test Mode] Published test path with %zu poses (%.2f s).", path.size(), plan_elapsed);
   }
 
@@ -637,10 +639,9 @@ private:
         tf2::Quaternion q;
         q.setRPY(0, 0, yaw);
         pose.pose.orientation = tf2::toMsg(q);
-      } else if (i > 0) {
-        pose.pose.orientation = result->path.poses[i - 1].pose.orientation;
       } else {
-        pose.pose.orientation.w = 1.0;
+        // 最后一个点使用 goal 的目标朝向
+        pose.pose.orientation = goal->goal.pose.orientation;
       }
       result->path.poses.push_back(pose);
     }
@@ -716,10 +717,9 @@ private:
         tf2::Quaternion q;
         q.setRPY(0, 0, yaw);
         pose.pose.orientation = tf2::toMsg(q);
-      } else if (i > 0) {
-        pose.pose.orientation = result->path.poses[i - 1].pose.orientation;
       } else {
-        pose.pose.orientation.w = 1.0;
+        // 最后一个点使用 goal 的目标朝向
+        pose.pose.orientation = gpose.orientation;
       }
       result->path.poses.push_back(pose);
     }
@@ -818,7 +818,7 @@ private:
       cloud_msg.is_bigendian = false;
       cloud_msg.is_dense = true;
 
-      cloud_msg.fields.resize(3);
+      cloud_msg.fields.resize(4);
       cloud_msg.fields[0].name = "x";
       cloud_msg.fields[0].offset = 0;
       cloud_msg.fields[0].datatype = sensor_msgs::msg::PointField::FLOAT32;
@@ -831,8 +831,12 @@ private:
       cloud_msg.fields[2].offset = 8;
       cloud_msg.fields[2].datatype = sensor_msgs::msg::PointField::FLOAT32;
       cloud_msg.fields[2].count = 1;
+      cloud_msg.fields[3].name = "intensity";
+      cloud_msg.fields[3].offset = 12;
+      cloud_msg.fields[3].datatype = sensor_msgs::msg::PointField::FLOAT32;
+      cloud_msg.fields[3].count = 1;
 
-      cloud_msg.point_step = 12;
+      cloud_msg.point_step = 16;
       cloud_msg.row_step = cloud_msg.point_step * cloud_msg.width;
       cloud_msg.data.resize(cloud_msg.row_step);
 
@@ -840,70 +844,18 @@ private:
         sensor_msgs::PointCloud2Iterator<float> iter_x(cloud_msg, "x");
         sensor_msgs::PointCloud2Iterator<float> iter_y(cloud_msg, "y");
         sensor_msgs::PointCloud2Iterator<float> iter_z(cloud_msg, "z");
+        sensor_msgs::PointCloud2Iterator<float> iter_i(cloud_msg, "intensity");
         for (const auto & pt : cloud_points) {
           *iter_x = static_cast<float>(pt.x);
           *iter_y = static_cast<float>(pt.y);
           *iter_z = static_cast<float>(pt.z);
-          ++iter_x; ++iter_y; ++iter_z;
+          // occupied voxel: intensity=1.0 表示不可通行
+          *iter_i = 1.0f;
+          ++iter_x; ++iter_y; ++iter_z; ++iter_i;
         }
       }
 
       map_cloud_pub_->publish(cloud_msg);
-    }
-
-    // 代价场点云可视化
-    if (cost_map_cloud_pub_ && planner_) {
-      std::vector<global_planner::PointPose> cost_pos;
-      std::vector<double> cost_vals;
-      planner_->getCostFieldCloud(cost_pos, cost_vals);
-      if (!cost_pos.empty()) {
-        sensor_msgs::msg::PointCloud2 cost_msg;
-        cost_msg.header.frame_id = frame_id_;
-        cost_msg.header.stamp = now();
-        cost_msg.height = 1;
-        cost_msg.width = static_cast<uint32_t>(cost_pos.size());
-        cost_msg.is_bigendian = false;
-        cost_msg.is_dense = true;
-
-        cost_msg.fields.resize(4);
-        cost_msg.fields[0].name = "x";
-        cost_msg.fields[0].offset = 0;
-        cost_msg.fields[0].datatype = sensor_msgs::msg::PointField::FLOAT32;
-        cost_msg.fields[0].count = 1;
-        cost_msg.fields[1].name = "y";
-        cost_msg.fields[1].offset = 4;
-        cost_msg.fields[1].datatype = sensor_msgs::msg::PointField::FLOAT32;
-        cost_msg.fields[1].count = 1;
-        cost_msg.fields[2].name = "z";
-        cost_msg.fields[2].offset = 8;
-        cost_msg.fields[2].datatype = sensor_msgs::msg::PointField::FLOAT32;
-        cost_msg.fields[2].count = 1;
-        cost_msg.fields[3].name = "intensity";
-        cost_msg.fields[3].offset = 12;
-        cost_msg.fields[3].datatype = sensor_msgs::msg::PointField::FLOAT32;
-        cost_msg.fields[3].count = 1;
-
-        cost_msg.point_step = 16;
-        cost_msg.row_step = cost_msg.point_step * cost_msg.width;
-        cost_msg.data.resize(cost_msg.row_step);
-
-        {
-          sensor_msgs::PointCloud2Iterator<float> iter_x(cost_msg, "x");
-          sensor_msgs::PointCloud2Iterator<float> iter_y(cost_msg, "y");
-          sensor_msgs::PointCloud2Iterator<float> iter_z(cost_msg, "z");
-          sensor_msgs::PointCloud2Iterator<float> iter_i(cost_msg, "intensity");
-          for (size_t i = 0; i < cost_pos.size(); ++i) {
-            *iter_x = static_cast<float>(cost_pos[i].x);
-            *iter_y = static_cast<float>(cost_pos[i].y);
-            *iter_z = static_cast<float>(cost_pos[i].z);
-            *iter_i = static_cast<float>(cost_vals[i]);
-            ++iter_x; ++iter_y; ++iter_z; ++iter_i;
-          }
-        }
-
-        cost_map_cloud_pub_->publish(cost_msg);
-        RCLCPP_INFO(get_logger(), "Cost map cloud published: %zu points", cost_pos.size());
-      }
     }
 
     const double total_s =
@@ -924,6 +876,62 @@ private:
     }
     const float k = static_cast<float>((t - 0.66) / 0.34);
     return makeColor(0.95F, 0.90F - 0.45F * k, 0.15F + 0.05F * k, alpha);
+  }
+
+  // ===== Cost 云发布 =====
+  void publishCostCloud()
+  {
+    if (!planner_ || !cost_map_cloud_pub_) return;
+
+    std::vector<global_planner::PointPose> cost_pos;
+    std::vector<double> cost_vals;
+    planner_->getCostFieldCloud(cost_pos, cost_vals);
+    if (cost_pos.empty()) return;
+
+    sensor_msgs::msg::PointCloud2 cloud_msg;
+    cloud_msg.header.frame_id = frame_id_;
+    cloud_msg.header.stamp = now();
+    cloud_msg.height = 1;
+    cloud_msg.width = static_cast<uint32_t>(cost_pos.size());
+    cloud_msg.is_bigendian = false;
+    cloud_msg.is_dense = true;
+
+    cloud_msg.fields.resize(4);
+    cloud_msg.fields[0].name = "x";
+    cloud_msg.fields[0].offset = 0;
+    cloud_msg.fields[0].datatype = sensor_msgs::msg::PointField::FLOAT32;
+    cloud_msg.fields[0].count = 1;
+    cloud_msg.fields[1].name = "y";
+    cloud_msg.fields[1].offset = 4;
+    cloud_msg.fields[1].datatype = sensor_msgs::msg::PointField::FLOAT32;
+    cloud_msg.fields[1].count = 1;
+    cloud_msg.fields[2].name = "z";
+    cloud_msg.fields[2].offset = 8;
+    cloud_msg.fields[2].datatype = sensor_msgs::msg::PointField::FLOAT32;
+    cloud_msg.fields[2].count = 1;
+    cloud_msg.fields[3].name = "intensity";
+    cloud_msg.fields[3].offset = 12;
+    cloud_msg.fields[3].datatype = sensor_msgs::msg::PointField::FLOAT32;
+    cloud_msg.fields[3].count = 1;
+
+    cloud_msg.point_step = 16;
+    cloud_msg.row_step = cloud_msg.point_step * cloud_msg.width;
+    cloud_msg.data.resize(cloud_msg.row_step);
+
+    sensor_msgs::PointCloud2Iterator<float> iter_x(cloud_msg, "x");
+    sensor_msgs::PointCloud2Iterator<float> iter_y(cloud_msg, "y");
+    sensor_msgs::PointCloud2Iterator<float> iter_z(cloud_msg, "z");
+    sensor_msgs::PointCloud2Iterator<float> iter_i(cloud_msg, "intensity");
+    for (size_t i = 0; i < cost_pos.size(); ++i) {
+      *iter_x = static_cast<float>(cost_pos[i].x);
+      *iter_y = static_cast<float>(cost_pos[i].y);
+      *iter_z = static_cast<float>(cost_pos[i].z);
+      *iter_i = static_cast<float>(cost_vals[i]);
+      ++iter_x; ++iter_y; ++iter_z; ++iter_i;
+    }
+
+    cost_map_cloud_pub_->publish(cloud_msg);
+    RCLCPP_INFO(get_logger(), "Published cost cloud with %zu points.", cost_pos.size());
   }
 
   // ===== 导航路径发布 =====
