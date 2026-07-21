@@ -131,6 +131,9 @@ public:
 
   void getPlannerResults(std::vector<PointPose>& plannerResults);
 
+  /** 获取全栅格代价场点云（xyz + cost），用于 RViz 可视化调试 */
+  void getCostFieldCloud(std::vector<PointPose> & out_positions, std::vector<double> & out_costs) const;
+
 private:
 
   void fillBounds(PointPose & min_bound,PointPose & max_bound) const;
@@ -232,7 +235,6 @@ private:
   bool isSegmentTraversable(const PointPose & a, const PointPose & b) const;
   /** 代价场查询（供平滑优化）：非可通行/越界格返回 1.0，可通行格返回预阻塞代价 */
   double costFieldAt(const GridIndex & idx) const;
-
   bool startPlan();
 
   void publishPath(

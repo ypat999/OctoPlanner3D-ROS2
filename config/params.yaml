@@ -3,7 +3,7 @@
     # 输入 PCD 点云文件路径
     # 路径说明：通过global_config或launch参数指定，此处为默认值
     # 实际运行时由 global_config.global_config.OCTOPLANNER_PCD_FILE_PATH 或 launch params_file 参数决定
-    input_pcd: "/home/ywj/slam_data/3d_map/1f_down10.pcd"  # 默认路径，可被global_config覆盖
+    input_pcd: "/home/ywj/slam_data/3d_map/3dmap.pcd"  # 默认路径，可被global_config覆盖
 
     # 输出 .bt 八叉树文件（不填则自动与 PCD 同名，e.g. 3dmap.pcd → 3dmap.bt）
     # output_bt: "result_cleaned.bt"
