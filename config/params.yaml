@@ -73,12 +73,12 @@
 
     # 地面支撑XY半径（栅格数），增加可支持斜坡
     # 减小此值可减少跨越小障碍物（如路沿、小草丛），保持更大的平坦区域
-    ground_support_xy_radius_cells: 2
+    ground_support_xy_radius_cells: 1
 
     # 地面支撑深度（栅格数），增加可支持跨楼梯
     # 减小此值可减少跨越台阶和楼梯，适合走平路场景
     # 分辨率 0.25 时建议 ≥ 3（对应 0.75m 物理深度）
-    ground_support_depth_cells: 3
+    ground_support_depth_cells: 2
 
     # ===== 障碍物避让参数（高度约束）=====
     # 启用预阻塞代价图（根据 robot_radius 和预阻塞半径计算可通行性）
@@ -88,11 +88,11 @@
     # 此值定义了从障碍物边缘开始代价场影响的最大距离（栅格数）
     # 增大此值可让路径更远离障碍物，但也会增加规划计算量
     # 典型值：2~25；建议与 robot_radius/resolution 相当或更大
-    preblocked_costmap_radius_cells: 2
+    preblocked_costmap_radius_cells: 25
 
     # 预阻塞代价权重，增加此值会让路径更远离障碍物
     # 增加此值可减少靠近草丛和路沿的行为，路径会保持在更平坦的区域
-    preblocked_costmap_weight: 8.0
+    preblocked_costmap_weight: 2.0
 
     # 代价衰减因子（Nav2 风格）：控制从 inscribed_radius 到 inflation_radius 的衰减速度
     # cost = exp(-factor * normalized_distance)，factor 越大衰减越快，窄通道 cost 叠加更平缓
