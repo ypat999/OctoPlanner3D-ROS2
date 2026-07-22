@@ -1295,9 +1295,20 @@ namespace global_planner
                     if (preblocked_grid[n_lin]) {
                         continue;
                     }
+                    // Nav2-style exponential inflation
                     const double d = std::sqrt(
                         static_cast<double>(off.x * off.x + off.y * off.y + off.z * off.z));
-                    const double cst = std::max(0.0, (denom - d) / denom);
+                    double cst = 0.0;
+                    const double res = octree_->getResolution();
+                    const double inscribed_cells = robot_radius_ / res;
+                    const double inflation_cells = static_cast<double>(radius_cells);
+                    if (d <= inscribed_cells) {
+                        cst = 1.0;  // inscribed radius: max cost
+                    } else if (d <= inflation_cells) {
+                        // exponential decay: exp(-factor * normalized_distance)
+                        const double normalized = (d - inscribed_cells) / (inflation_cells - inscribed_cells);
+                        cst = std::exp(-cost_scaling_factor_ * normalized);
+                    }
                     auto it = my_costmap.find(n);
                     if (it == my_costmap.end() || cst > it->second) {
                         my_costmap[n] = cst;

@@ -103,6 +103,7 @@ public:
   void setEnablePreblockedCostmap(bool enable) { enable_preblocked_costmap_ = enable; }
   void setPreblockedCostmapRadiusCells(int radius) { preblocked_costmap_radius_cells_ = radius; }
   void setPreblockedCostmapWeight(double weight) { preblocked_costmap_weight_ = weight; }
+  void setCostScalingFactor(double factor) { cost_scaling_factor_ = factor; }
   void setLowestTraversableOnly(bool enable) { lowest_traversable_only_ = enable; }
 
   // ===== 路径平滑参数 =====
@@ -265,6 +266,7 @@ private:
   bool enable_preblocked_costmap_ = true;
   int preblocked_costmap_radius_cells_ = 3;
   double preblocked_costmap_weight_ = 2.5;
+  double cost_scaling_factor_ = 10.0;  // Nav2-style inflation decay factor
   bool lowest_traversable_only_ = false;
 
   // ===== 平滑参数 =====

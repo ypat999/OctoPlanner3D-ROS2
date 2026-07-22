@@ -133,6 +133,7 @@ public:
     const bool enable_preblocked_costmap = declare_parameter<bool>("enable_preblocked_costmap", true);
     const int preblocked_costmap_radius_cells = declare_parameter<int>("preblocked_costmap_radius_cells", 3);
     const double preblocked_costmap_weight = declare_parameter<double>("preblocked_costmap_weight", 2.5);
+    const double cost_scaling_factor = declare_parameter<double>("cost_scaling_factor", 10.0);
     const bool lowest_traversable_only = declare_parameter<bool>("lowest_traversable_only", false);
 
     // 平滑参数
@@ -182,6 +183,7 @@ public:
     planner_->setEnablePreblockedCostmap(enable_preblocked_costmap);
     planner_->setPreblockedCostmapRadiusCells(preblocked_costmap_radius_cells);
     planner_->setPreblockedCostmapWeight(preblocked_costmap_weight);
+    planner_->setCostScalingFactor(cost_scaling_factor);
     planner_->setLowestTraversableOnly(lowest_traversable_only);
 
     // 设置平滑参数
@@ -214,6 +216,7 @@ public:
           else if (name == "enable_preblocked_costmap") planner_->setEnablePreblockedCostmap(p.as_bool());
           else if (name == "preblocked_costmap_radius_cells") planner_->setPreblockedCostmapRadiusCells(p.as_int());
           else if (name == "preblocked_costmap_weight") planner_->setPreblockedCostmapWeight(p.as_double());
+          else if (name == "cost_scaling_factor") planner_->setCostScalingFactor(p.as_double());
           else if (name == "lowest_traversable_only") planner_->setLowestTraversableOnly(p.as_bool());
           else if (name == "smoothing_enabled") planner_->setSmoothingEnabled(p.as_bool());
           else if (name == "smoothing_simplify_epsilon") planner_->setSmoothingSimplifyEpsilon(p.as_double());
